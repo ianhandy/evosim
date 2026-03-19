@@ -119,23 +119,25 @@ function renderPreview() {
     return v / tot;
   }
 
-  // Island centers
-  const numIslands = Math.max(2, Math.floor(gs / 10) + 1 + Math.floor(hash(0, 0, seedVal * 3) * 3));
-  const centers = [];
-  for (let attempt = 0; attempt < numIslands * 10 && centers.length < numIslands; attempt++) {
-    const cr = 0.08 * gs + hash(attempt, 1, seedVal + 13) * gs * 0.84;
-    const cc = 0.08 * gs + hash(attempt, 2, seedVal + 17) * gs * 0.84;
-    let ok = true;
-    for (const [er, ec] of centers) {
-      if (Math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.15) { ok = false; break; }
-    }
-    if (ok) {
-      const radius = gs * 0.08 + hash(attempt, 3, seedVal + 7) * gs * 0.20;
-      const peak = 0.6 + hash(attempt, 4, seedVal + 11) * 0.4;
-      centers.push([cr, cc, radius, peak]);
-    }
+  // Generate blob landmass (matches Python algorithm)
+  const cx2 = gs * (0.4 + hash(0, 0, seedVal + 1) * 0.2);
+  const cy2 = gs * (0.4 + hash(0, 1, seedVal + 2) * 0.2);
+  const aspect = 0.6 + hash(0, 2, seedVal + 3) * 1.0;
+  const mainR = gs * (0.32 + hash(0, 3, seedVal + 4) * 0.1);
+  const numBlobs = 5 + Math.floor(hash(0, 4, seedVal + 5) * 8);
+
+  const blobs = [[cx2, cy2, mainR, mainR * aspect, hash(0, 5, seedVal + 6) * Math.PI]];
+  for (let i = 0; i < numBlobs; i++) {
+    const parent = blobs[Math.floor(hash(i, 10, seedVal + 20) * blobs.length)];
+    const angle = hash(i, 11, seedVal + 21) * Math.PI * 2;
+    const dist = parent[2] * (0.3 + hash(i, 12, seedVal + 22) * 0.5);
+    const bx = parent[0] + Math.cos(angle) * dist;
+    const by = parent[1] + Math.sin(angle) * dist;
+    const br = gs * (0.08 + hash(i, 13, seedVal + 23) * 0.17);
+    const ba = br * (0.5 + hash(i, 14, seedVal + 24) * 1.0);
+    const brot = hash(i, 15, seedVal + 25) * Math.PI;
+    blobs.push([bx, by, br, ba, brot]);
   }
-  if (centers.length === 0) centers.push([gs/2, gs/2, gs*0.25, 0.9]);
 
   const tileW = (cw / gs) * 0.85;
   const tileH = tileW * 0.5;
@@ -146,20 +148,27 @@ function renderPreview() {
 
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
-      // Island mask
+      // Blob mask
       let mask = 0;
-      for (const [cr, cc, radius, peak] of centers) {
-        const dist = Math.sqrt((r-cr)**2 + (c-cc)**2);
-        if (dist < radius) {
-          const t = dist / radius;
-          const falloff = (1 - t * t) ** 2;
-          mask = Math.max(mask, peak * falloff);
+      for (const [bx, by, brx, bry, brot] of blobs) {
+        const dx = r - bx, dy = c - by;
+        const rx = dx * Math.cos(brot) + dy * Math.sin(brot);
+        const ry = -dx * Math.sin(brot) + dy * Math.cos(brot);
+        const d = (rx / Math.max(1, brx)) ** 2 + (ry / Math.max(1, bry)) ** 2;
+        if (d < 1) {
+          const t = Math.sqrt(d);
+          mask = Math.max(mask, (1 - t * t) ** 2);
         }
       }
 
-      // Combine mask with FBM noise
+      // Edge falloff
+      const border = gs * 0.08;
+      const edgeDist = Math.min(r, c, gs - 1 - r, gs - 1 - c);
+      if (edgeDist < border) mask *= (edgeDist / border) ** 1.5;
+
+      // Combine mask with noise
       const n = fbm(r / gs * 4, c / gs * 4, seedVal);
-      let e = mask * 0.55 + mask * n * 0.45;
+      let e = mask * 0.4 + mask * n * 0.6;
       e = Math.max(0, Math.min(1, e));
 
       let biome;

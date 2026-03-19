@@ -146,14 +146,20 @@ def _fbm_noise(size, seed_val, octaves=6, lacunarity=2.0, gain=0.5):
 
 def _generate_terrain(seed_str):
     """
-    Generate realistic archipelago terrain.
+    Generate a single large island (or connected landmass) that fills most
+    of the grid. Water is mostly at the edges — the coastline.
+
+    The island shape is organic and varied — not a circle or rectangle.
+    The camera should focus on the land, not empty ocean.
 
     Algorithm:
-    1. FBM noise for base continent shape
-    2. Multiple island seeds with smooth radial falloff
-    3. Multiply noise × island mask for natural coastlines
-    4. Ridge features on high terrain
-    5. Coastal shelf (gradual underwater slope)
+    1. Create a large organic blob mask centered on the grid
+       - Random walk / blob union for irregular shape
+       - Fills ~60-75% of the grid with land
+    2. FBM noise for elevation detail within the landmass
+    3. Edge falloff creates natural coastline
+    4. Ridge features for mountain spines
+    5. Narrow water channels and bays cut into the landmass for variety
     """
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
@@ -162,70 +168,113 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Step 1: Island mask — defines where land CAN exist ──
-    # Place island centers with minimum spacing
-    num_islands = max(2, gs // 10 + rng.randint(1, 4))
-    centers = []
-    for attempt in range(num_islands * 10):
-        cr = rng.uniform(gs * 0.08, gs * 0.92)
-        cc = rng.uniform(gs * 0.08, gs * 0.92)
-        too_close = any(math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.15
-                        for er, ec, _, _ in centers)
-        if not too_close:
-            radius = rng.uniform(gs * 0.08, gs * 0.28)
-            peak = rng.uniform(0.6, 1.0)
-            centers.append((cr, cc, radius, peak))
-        if len(centers) >= num_islands:
-            break
-
-    if not centers:
-        centers = [(gs * 0.5, gs * 0.5, gs * 0.25, 0.9)]
-
-    # Build smooth island mask
+    # ── Step 1: Create organic landmass shape ──
+    # Use overlapping ellipses with random positions/sizes to create
+    # an irregular blob that fills most of the grid
     mask = np.zeros((gs, gs), dtype=np.float32)
+
+    # Main body — large ellipse near center
+    cx = gs * (0.4 + rng.uniform(0, 0.2))
+    cy = gs * (0.4 + rng.uniform(0, 0.2))
+    # Aspect ratio: sometimes tall, sometimes wide
+    aspect = rng.uniform(0.6, 1.6)
+    main_r = gs * rng.uniform(0.32, 0.42)
+
+    # Add 5-12 overlapping blobs to create irregular coastline
+    num_blobs = 5 + rng.randint(0, 8)
+    blobs = [(cx, cy, main_r, main_r * aspect, rng.uniform(0, math.pi))]
+    for _ in range(num_blobs):
+        # Each blob is near an existing blob (connected landmass)
+        parent = blobs[rng.randint(0, len(blobs))]
+        angle = rng.uniform(0, 2 * math.pi)
+        dist = parent[2] * rng.uniform(0.3, 0.8)
+        bx = parent[0] + math.cos(angle) * dist
+        by = parent[1] + math.sin(angle) * dist
+        br = gs * rng.uniform(0.08, 0.25)
+        ba = br * rng.uniform(0.5, 1.5)
+        brot = rng.uniform(0, math.pi)
+        blobs.append((bx, by, br, ba, brot))
+
+    # Rasterize blobs into mask
     for r in range(gs):
         for c in range(gs):
-            for cr_c, cc_c, radius, peak in centers:
-                dist = math.sqrt((r - cr_c)**2 + (c - cc_c)**2)
-                if dist < radius:
-                    t = dist / radius
-                    # Smooth cubic falloff: (1 - t²)² gives natural island shape
+            for bx, by, brx, bry, brot in blobs:
+                # Rotated ellipse distance
+                dx = r - bx
+                dy = c - by
+                rx = dx * math.cos(brot) + dy * math.sin(brot)
+                ry = -dx * math.sin(brot) + dy * math.cos(brot)
+                d = (rx / max(1, brx)) ** 2 + (ry / max(1, bry)) ** 2
+                if d < 1:
+                    t = math.sqrt(d)
                     falloff = (1 - t * t) ** 2
-                    mask[r, c] = max(mask[r, c], peak * falloff)
+                    mask[r, c] = max(mask[r, c], falloff)
 
-    # ── Step 2: FBM noise for terrain detail ──
+    # ── Step 2: Cut water channels/bays into the landmass ──
+    # Random sinusoidal cuts create inlets, bays, and narrow straits
+    num_cuts = rng.randint(1, 4)
+    for _ in range(num_cuts):
+        cut_start = rng.uniform(0, gs)
+        cut_dir = rng.choice(['h', 'v'])
+        cut_width = gs * rng.uniform(0.02, 0.06)
+        cut_freq = rng.uniform(0.05, 0.15)
+        cut_amp = gs * rng.uniform(0.03, 0.1)
+        cut_depth = rng.uniform(0.4, 0.8)
+        for i in range(gs):
+            offset = cut_start + math.sin(i * cut_freq) * cut_amp
+            for w in range(int(cut_width * 2)):
+                pos = int(offset - cut_width + w)
+                if 0 <= pos < gs:
+                    if cut_dir == 'h':
+                        ri, ci = i, pos
+                    else:
+                        ri, ci = pos, i
+                    if 0 <= ri < gs and 0 <= ci < gs:
+                        mask[ri, ci] *= (1 - cut_depth * max(0, 1 - abs(w - cut_width) / cut_width))
+
+    # ── Step 3: FBM noise for elevation detail ──
     terrain_noise = _fbm_noise(gs, seed_val, octaves=6)
 
-    # ── Step 3: Combine — multiply mask by noise ──
-    # This gives us noisy coastlines but clean ocean
-    result = mask * 0.55 + mask * terrain_noise * 0.45
+    # Combine: mask provides shape, noise provides height variation
+    result = mask * 0.4 + mask * terrain_noise * 0.6
 
-    # ── Step 4: Coastal shelf — gradual underwater slope around islands ──
-    # Add a low-level noise floor near islands for shallow water
-    shelf_noise = _smooth_noise(gs, seed_val + 5555, scale=0.5)
+    # ── Step 4: Edge falloff — ensure water at grid borders ──
+    border = gs * 0.08
     for r in range(gs):
         for c in range(gs):
-            if mask[r, c] > 0.05 and result[r, c] < 0.2:
-                # Near an island but underwater — add shelf
-                result[r, c] = max(result[r, c], 0.08 + shelf_noise[r, c] * 0.12)
+            edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
+            if edge_dist < border:
+                result[r, c] *= (edge_dist / border) ** 1.5
 
-    # ── Step 5: Ridge features on high terrain ──
+    # ── Step 5: Ridge features ──
     ridge = _fbm_noise(gs, seed_val + 9999, octaves=3, gain=0.4)
     for r in range(gs):
         for c in range(gs):
-            if result[r, c] > 0.45:
-                spine = abs(ridge[r, c] - 0.5) * 2  # creates sharp ridges
-                result[r, c] += spine * 0.15 * (result[r, c] - 0.35)
+            if result[r, c] > 0.35:
+                spine = abs(ridge[r, c] - 0.5) * 2
+                result[r, c] += spine * 0.12 * (result[r, c] - 0.25)
 
     # ── Normalize ──
     lo, hi = result.min(), result.max()
     if hi > lo:
         result = (result - lo) / (hi - lo)
 
+    # Boost land — shift distribution so ~60-70% of tiles are above water
+    # Find the elevation threshold that gives us ~35% water
+    sorted_elev = np.sort(result.ravel())
+    water_target = int(G2 * 0.32)
+    water_threshold = sorted_elev[water_target] if water_target < G2 else 0.15
+    # Remap: everything below threshold becomes deep water, rest stretches to fill 0-1
+    for r in range(gs):
+        for c in range(gs):
+            if result[r, c] < water_threshold:
+                result[r, c] = result[r, c] / max(0.01, water_threshold) * 0.14
+            else:
+                result[r, c] = 0.15 + (result[r, c] - water_threshold) / max(0.01, 1 - water_threshold) * 0.85
+
     elevations[:] = result
     _assign_biomes()
 
-    # Initialize vegetation
     for r in range(gs):
         for c in range(gs):
             vegetation[r, c] = min(1.0, VEG_REGROWTH[biomes[r, c]] * 10)
