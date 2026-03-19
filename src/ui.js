@@ -397,7 +397,7 @@ function startRenderLoop() {
   renderFrameId = requestAnimationFrame(frame);
 }
 
-// ── Map renderer (Canvas 2D for now — WebGL upgrade later) ──
+// ── Map renderer (Canvas 2D) ──
 function renderMap(views) {
   const dpr = window.devicePixelRatio || 1;
   const ctx = mapCanvas.getContext('2d');
@@ -409,28 +409,48 @@ function renderMap(views) {
   ctx.fillRect(0, 0, w, h);
 
   const gs = sim.getLayout().gridSize;
-  const baseTileW = (w / gs) * 0.85 * camZoom;
-  const tileW = baseTileW;
+  const tileW = (w / gs) * 0.85 * camZoom;
   const tileH = tileW * camTilt;
   const heightScale = 80 * camZoom;
 
   const offsetX = w / 2 + camPanX;
   const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
 
+  // Deep baseline — well below the lowest possible tile, extends past viewport bottom
+  const deepBase = offsetY + gs * tileH + heightScale;
+
   const BIOME_COLORS = getBiomeColors();
 
+  // Helper: isometric position for a tile
+  function tilePos(r, c) {
+    const elev = views.elevations[r * gs + c];
+    const ix = (c - r) * (tileW * 0.5);
+    const iy = (c + r) * (tileH * 0.5);
+    const iz = elev * heightScale;
+    return { x: offsetX + ix, y: offsetY + iy - iz, elev };
+  }
+
+  // Helper: tile color from biome + elevation
+  function tileColor(idx) {
+    const elev = views.elevations[idx];
+    const biome = views.biomes[idx];
+    const bc = BIOME_COLORS[biome] || [30, 20, 10];
+    return {
+      r: bc[0] + elev * 30,
+      g: bc[1] + elev * 20,
+      b: bc[2] + elev * 15,
+      biome,
+    };
+  }
+
+  // Draw back-to-front (painter's algorithm)
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
       const idx = r * gs + c;
-      const elev = views.elevations[idx];
-      const biome = views.biomes[idx];
+      const { x: sx, y: sy, elev } = tilePos(r, c);
+      const { r: tr, g: tg, b: tb, biome } = tileColor(idx);
 
-      const bc = BIOME_COLORS[biome] || [30, 20, 10];
-      let tr = bc[0] + elev * 30;
-      let tg = bc[1] + elev * 20;
-      let tb = bc[2] + elev * 15;
-
-      // Directional shade
+      // Directional shade from neighbor elevation differences
       let shade = 0.65;
       if (r > 0 && c > 0) {
         const hL = views.elevations[r * gs + (c - 1)];
@@ -438,71 +458,85 @@ function renderMap(views) {
         shade = 0.5 + 0.5 * Math.max(0, Math.min(1, 0.5 + (elev - hL) * 2 + (elev - hU) * 1.5));
       }
 
-      const ix = (c - r) * (tileW * 0.5);
-      const iy = (c + r) * (tileH * 0.5);
-      const iz = elev * heightScale;
-      const sx = offsetX + ix;
-      const sy = offsetY + iy - iz;
+      // Diamond points
+      const top =    { x: sx,              y: sy - tileH * 0.5 };
+      const right =  { x: sx + tileW * 0.5, y: sy };
+      const bottom = { x: sx,              y: sy + tileH * 0.5 };
+      const left =   { x: sx - tileW * 0.5, y: sy };
 
-      const deepBase = offsetY + gs * tileH * 0.5 + heightScale * 0.5;
-      const pillarH = deepBase - (sy + tileH * 0.5);
+      // Pillar height — all tiles extend to deep baseline
+      const pillarH = deepBase - bottom.y;
 
+      // ── RIGHT FACE (SE-facing, lighter shade) ──
       if (pillarH > 0) {
-        // Right face
         ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
         ctx.beginPath();
-        ctx.moveTo(sx + tileW * 0.5, sy);
-        ctx.lineTo(sx, sy + tileH * 0.5);
-        ctx.lineTo(sx, sy + tileH * 0.5 + pillarH);
-        ctx.lineTo(sx + tileW * 0.5, sy + pillarH);
-        ctx.fill();
-
-        // Front face
-        ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
-        ctx.beginPath();
-        ctx.moveTo(sx - tileW * 0.5, sy);
-        ctx.lineTo(sx, sy + tileH * 0.5);
-        ctx.lineTo(sx, sy + tileH * 0.5 + pillarH);
-        ctx.lineTo(sx - tileW * 0.5, sy + pillarH);
+        ctx.moveTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(bottom.x, bottom.y + pillarH);
+        ctx.lineTo(right.x, right.y + pillarH);
         ctx.fill();
       }
 
-      // Top face
+      // ── LEFT FACE (SW-facing, darkest) ──
+      if (pillarH > 0) {
+        ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
+        ctx.beginPath();
+        ctx.moveTo(left.x, left.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(bottom.x, bottom.y + pillarH);
+        ctx.lineTo(left.x, left.y + pillarH);
+        ctx.fill();
+      }
+
+      // ── TOP FACE ──
       ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
       ctx.beginPath();
-      ctx.moveTo(sx, sy - tileH * 0.5);
-      ctx.lineTo(sx + tileW * 0.5, sy);
-      ctx.lineTo(sx, sy + tileH * 0.5);
-      ctx.lineTo(sx - tileW * 0.5, sy);
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.lineTo(bottom.x, bottom.y);
+      ctx.lineTo(left.x, left.y);
       ctx.closePath();
       ctx.fill();
 
-      // Water shimmer for aquatic biomes
+      // Water shimmer
       if (biome <= 1) {
         ctx.fillStyle = getWaterColor();
         ctx.beginPath();
-        ctx.moveTo(sx, sy - tileH * 0.5);
-        ctx.lineTo(sx + tileW * 0.5, sy);
-        ctx.lineTo(sx, sy + tileH * 0.5);
-        ctx.lineTo(sx - tileW * 0.5, sy);
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
         ctx.closePath();
         ctx.fill();
       }
 
-      // Species population overlay — show dominant species color
+      // River flag — draw river fill on top face
+      if (views.tileFlags[idx] & 1) {
+        ctx.fillStyle = 'rgba(25, 80, 140, 0.45)';
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Species population overlay
       let maxPop = 0, maxS = -1;
       for (let s = 0; s < 5; s++) {
         const p = views.populations[idx * 5 + s];
         if (p > maxPop) { maxPop = p; maxS = s; }
       }
       if (maxPop > 5 && maxS >= 0) {
-        const intensity = Math.min(0.5, maxPop / 200);
+        const intensity = Math.min(0.45, maxPop / 250);
         ctx.fillStyle = hexToRgba(SPECIES_COLORS[maxS], intensity);
         ctx.beginPath();
-        ctx.moveTo(sx, sy - tileH * 0.5);
-        ctx.lineTo(sx + tileW * 0.5, sy);
-        ctx.lineTo(sx, sy + tileH * 0.5);
-        ctx.lineTo(sx - tileW * 0.5, sy);
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
         ctx.closePath();
         ctx.fill();
       }
@@ -510,11 +544,19 @@ function renderMap(views) {
       // Grid line
       ctx.strokeStyle = 'rgba(221,193,101,0.06)';
       ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.lineTo(bottom.x, bottom.y);
+      ctx.lineTo(left.x, left.y);
+      ctx.closePath();
       ctx.stroke();
     }
   }
 
-  // Rivers
+  // ── Rivers (2D paths on tile surfaces) ──
+  // Draw river paths that follow the tile grid, rendered as thick lines
+  // connecting tile centers at their isometric positions
   const rp = views.riverPaths;
   const rm = views.riverMeta;
   const maxRivers = rm.length / 4;
@@ -523,34 +565,45 @@ function renderMap(views) {
   for (let ri = 0; ri < maxRivers; ri++) {
     const riverId = rm[ri * 4];
     if (riverId < 0) break;
-    const age = rm[ri * 4 + 1];
-    const width = rm[ri * 4 + 2];
+    const width = Math.max(1, rm[ri * 4 + 2]);
     const active = rm[ri * 4 + 3] > 0;
 
-    ctx.strokeStyle = active ? 'rgba(30, 90, 160, 0.7)' : 'rgba(30, 70, 120, 0.3)';
-    ctx.lineWidth = Math.max(1, width * 0.8 * camZoom);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-
-    let started = false;
+    // Collect path points
+    const points = [];
     while (rpIdx < rp.length / 2) {
       const pr = rp[rpIdx * 2];
       const pc = rp[rpIdx * 2 + 1];
       rpIdx++;
-      if (pr < 0) break; // sentinel — end of this river's path
-
-      const elev = views.elevations[pr * gs + pc];
-      const ix = (pc - pr) * (tileW * 0.5);
-      const iy = (pc + pr) * (tileH * 0.5);
-      const iz = elev * heightScale;
-      const sx = offsetX + ix;
-      const sy = offsetY + iy - iz;
-
-      if (!started) { ctx.moveTo(sx, sy); started = true; }
-      else ctx.lineTo(sx, sy);
+      if (pr < 0) break;
+      points.push(tilePos(pr, pc));
     }
-    if (started) ctx.stroke();
+
+    if (points.length < 2) continue;
+
+    // Draw river as smooth curve on tile surface
+    ctx.strokeStyle = active ? 'rgba(20, 70, 140, 0.7)' : 'rgba(20, 50, 100, 0.3)';
+    ctx.lineWidth = Math.max(1.5, width * 1.2 * camZoom);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      // Smooth curve through midpoints for organic river feel
+      if (i < points.length - 1) {
+        const mx = (points[i].x + points[i + 1].x) / 2;
+        const my = (points[i].y + points[i + 1].y) / 2;
+        ctx.quadraticCurveTo(points[i].x, points[i].y, mx, my);
+      } else {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+    }
+    ctx.stroke();
+
+    // River glow
+    ctx.strokeStyle = active ? 'rgba(40, 100, 180, 0.15)' : 'rgba(30, 60, 100, 0.08)';
+    ctx.lineWidth = Math.max(3, width * 2.5 * camZoom);
+    ctx.stroke();
   }
 
   // Vignette
