@@ -165,7 +165,7 @@ html, body {
 .controls { display: flex; gap: 4px; }
 #gen-counter {
   color: var(--dim); font-size: 11px;
-  margin-left: auto; white-space: nowrap;
+  white-space: nowrap;
 }
 #gen-counter span { color: var(--gold-light); }
 #season-label {
@@ -256,6 +256,99 @@ html, body {
 }
 .species-card.extinct .sp-name { text-decoration: line-through; }
 .species-card.extinct .sp-pop { color: var(--red); font-size: 9px; }
+
+/* ── Panel Headers ── */
+.panel-header {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 0 2px;
+}
+.panel-title {
+  font-size: 9px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 1px;
+  flex: 1;
+}
+.help-btn {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--dim);
+  font-size: 9px; font-family: var(--sans);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  line-height: 1;
+}
+.help-btn:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(221,193,101,0.08);
+}
+
+/* ── Tooltip Overlay ── */
+#tooltip-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+#tooltip-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 20px;
+  max-width: 380px;
+  width: 100%;
+}
+#tooltip-title {
+  font-size: 13px; font-weight: 700;
+  color: var(--gold-light);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+#tooltip-body {
+  font-size: 11px; line-height: 1.7;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+#tooltip-body code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--gold);
+}
+#tooltip-body p { margin: 6px 0; }
+#tooltip-body strong { color: var(--gold-light); }
+#tooltip-close { display: block; margin-left: auto; }
+
+/* ── Map Hint ── */
+.map-hint {
+  position: absolute;
+  bottom: 8px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px; color: var(--dim);
+  background: rgba(0,0,0,0.5);
+  padding: 3px 10px;
+  border-radius: 3px;
+  pointer-events: none;
+  opacity: 0.7;
+  transition: opacity 2s;
+  white-space: nowrap;
+}
+.map-hint.fade { opacity: 0; }
+
+/* ── Header Right ── */
+.header-right {
+  display: flex; align-items: center; gap: 6px;
+  margin-left: auto;
+}
+.btn-small {
+  font-size: 9px; padding: 3px 8px;
+}
 
 /* ── Journal Feed ── */
 #journal-feed {

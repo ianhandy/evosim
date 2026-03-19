@@ -556,6 +556,78 @@ function renderJournal() {
   journalFeed.scrollTop = journalFeed.scrollHeight;
 }
 
+// ── Tooltip / Help system ──
+const tooltipOverlay = $('tooltip-overlay');
+const tooltipTitle = $('tooltip-title');
+const tooltipBody = $('tooltip-body');
+
+const HELP_CONTENT = {
+  species: {
+    title: 'Species & Traits',
+    body: `<p>Each species has <strong>6 evolvable traits</strong> — 5 universal (clutch size, longevity, mutation rate, metabolism, migration tendency) plus 1 species-specific adaptation.</p>
+<p>Traits are floats from 0 to 1, tracked as population-weighted means per tile. They evolve through <strong>natural selection</strong> (survivors pass traits to offspring), <strong>genetic drift</strong> (random changes in small populations), and <strong>mutation</strong>.</p>
+<p>The trait bar shows the species-specific trait. No trait is "better" — every value creates tradeoffs through interacting systems.</p>
+<p><strong>Equation:</strong> Drift variance: <code>σ² = p(1−p) / 2N</code> (Wright's equation). Smaller populations drift faster.</p>`,
+  },
+  population: {
+    title: 'Population Dynamics',
+    body: `<p>Population growth follows the <strong>logistic equation</strong>:</p>
+<p><code>dN/dt = rN(1 − N/K)</code></p>
+<p>Where <strong>r</strong> is the growth rate (modified by clutch size trait) and <strong>K</strong> is carrying capacity (modified by habitat, food, season, metabolism).</p>
+<p>Predation uses the <strong>Holling Type II functional response</strong>:</p>
+<p><code>kills = a·P·N / (1 + a·h·N)</code></p>
+<p>This means predation <strong>saturates</strong> at high prey density — predators can't eat infinitely fast. <code>a</code> = attack rate, <code>h</code> = handling time, <code>P</code> = predators, <code>N</code> = prey.</p>
+<p>Scientists use these exact equations to model real ecosystems. The Lotka-Volterra predator-prey cycle you see in the chart is an emergent property — not coded directly.</p>`,
+  },
+  journal: {
+    title: 'Field Journal',
+    body: `<p>The journal records significant ecological events as they happen — population booms, crashes, extinctions, seasonal stress.</p>
+<p>Entries are written from the perspective of a field researcher observing the ecosystem. Each entry corresponds to a real change in the simulation data.</p>
+<p>In a real field study, researchers track <strong>census data</strong> over time and look for the same patterns: sudden declines, range contractions, founder effects after population bottlenecks.</p>
+<p>Click any entry to jump to the relevant point in the population chart (coming soon).</p>`,
+  },
+};
+
+document.querySelectorAll('.help-btn').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const key = btn.dataset.help;
+    const content = HELP_CONTENT[key];
+    if (!content) return;
+    tooltipTitle.textContent = content.title;
+    tooltipBody.innerHTML = content.body;
+    tooltipOverlay.classList.remove('hidden');
+  });
+});
+
+$('tooltip-close').addEventListener('click', () => tooltipOverlay.classList.add('hidden'));
+tooltipOverlay.addEventListener('click', e => {
+  if (e.target === tooltipOverlay) tooltipOverlay.classList.add('hidden');
+});
+
+// ── LOD toggle ──
+const btnLod = $('btn-lod');
+let lodManual = false;
+
+btnLod.addEventListener('click', () => {
+  const views = sim.getViews();
+  if (!views) return;
+  const current = views.globals[GLOBAL.LOD_LEVEL];
+  const next = current === 0 ? 1 : 0;
+  views.globals[GLOBAL.LOD_LEVEL] = next;
+  lodManual = true;
+  btnLod.textContent = next === 0 ? 'Full' : 'Fast';
+  btnLod.classList.toggle('active', next === 1);
+  // Tell Python
+  // (auto-LOD in sim.js will respect this until it overrides)
+});
+
+// ── Map hint auto-fade ──
+const mapHint = $('map-hint');
+if (mapHint) {
+  setTimeout(() => mapHint.classList.add('fade'), 5000);
+}
+
 // ── Theme selector ──
 const themeSelect = $('theme-select');
 function populateThemes() {

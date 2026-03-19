@@ -19,7 +19,7 @@
 <!-- SETUP SCREEN -->
 <div id="setup" class="hidden">
   <h1>EVOSIM</h1>
-  <p class="subtitle">Configure your observation</p>
+  <p class="subtitle">An evolution observation simulation</p>
   <div class="setup-form">
     <div class="setup-row">
       <label>Seed</label>
@@ -52,21 +52,46 @@
     </div>
     <span id="gen-counter">Gen <span id="gen-num">0</span></span>
     <span id="season-label"></span>
-    <select id="theme-select" class="theme-select"></select>
+    <div class="header-right">
+      <button class="btn btn-small" id="btn-lod" title="Simulation detail level">Full</button>
+      <select id="theme-select" class="theme-select"></select>
+    </div>
   </header>
 
   <main id="main">
     <section id="map-area">
       <canvas id="map-canvas"></canvas>
+      <div class="map-hint" id="map-hint">Drag to pan · Scroll to zoom · Right-drag to tilt · Double-click to reset</div>
     </section>
     <aside id="panel">
+      <div class="panel-header">
+        <span class="panel-title">Species</span>
+        <button class="help-btn" data-help="species">?</button>
+      </div>
       <div id="species-cards"></div>
-      <div class="chart-label">Population</div>
+
+      <div class="panel-header">
+        <span class="panel-title">Population</span>
+        <button class="help-btn" data-help="population">?</button>
+      </div>
       <canvas id="pop-chart"></canvas>
-      <div class="chart-label">Field Journal</div>
+
+      <div class="panel-header">
+        <span class="panel-title">Field Journal</span>
+        <button class="help-btn" data-help="journal">?</button>
+      </div>
       <div id="journal-feed"></div>
     </aside>
   </main>
+</div>
+
+<!-- TOOLTIP OVERLAY -->
+<div id="tooltip-overlay" class="hidden">
+  <div id="tooltip-card">
+    <div id="tooltip-title"></div>
+    <div id="tooltip-body"></div>
+    <button class="btn btn-small" id="tooltip-close">Got it</button>
+  </div>
 </div>
 
 <script type="module" src="ui.js"></script>

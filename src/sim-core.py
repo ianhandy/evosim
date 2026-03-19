@@ -181,9 +181,10 @@ def _k(r, c, s, season):
     elif s == WORM:      food = min(1.0, 0.3 + total_deaths_last / max(1, G2 * 3))
     else:                food = 0.5  # Leviathan — prey-driven
 
-    food_mod = 0.3 + 0.7 * food
+    food_mod = max(0.05, 0.3 + 0.7 * food)
     met_amp = food_mod ** (0.7 + met * 0.6)
-    return max(1, BASE_K[s] * suit * met_amp * (0.85 + 0.15 * season))
+    result = BASE_K[s] * suit * met_amp * (0.85 + 0.15 * season)
+    return max(1, result) if not math.isnan(result) else 1
 
 
 def _step_growth(r, c, season):
@@ -268,6 +269,8 @@ def _step_traits(r, c):
             mean += random.gauss(0, math.sqrt(max(0, drift_v)))
             var += mut * MUTATION_STEP
             var *= 0.99
+            if math.isnan(mean): mean = 0.5
+            if math.isnan(var): var = 0.04
             traits[r, c, s, t] = max(0.001, min(0.999, mean))
             trait_var[r, c, s, t] = max(0.001, min(0.25, var))
 
