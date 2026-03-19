@@ -461,13 +461,31 @@ function renderMap(views) {
       const left   = { x: ctr.x - tileW * 0.5, y: ctr.y };
 
       // Floor diamond — same tile grid position but at floor elevation
-      // This creates an isometric floor plane, not a flat horizontal line
       const flr = isoXY(r, c, FLOOR_ELEV);
+      const flrTop    = { x: flr.x,               y: flr.y - tileH * 0.5 };
       const flrRight  = { x: flr.x + tileW * 0.5, y: flr.y };
       const flrBottom = { x: flr.x,               y: flr.y + tileH * 0.5 };
       const flrLeft   = { x: flr.x - tileW * 0.5, y: flr.y };
 
-      // ── RIGHT FACE (SE-facing) ──
+      // ── BACK-LEFT FACE (NW-facing, darkest — usually occluded) ──
+      ctx.fillStyle = `rgb(${tr * shade * 0.25 | 0},${tg * shade * 0.25 | 0},${tb * shade * 0.25 | 0})`;
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(left.x, left.y);
+      ctx.lineTo(flrLeft.x, flrLeft.y);
+      ctx.lineTo(flrTop.x, flrTop.y);
+      ctx.fill();
+
+      // ── BACK-RIGHT FACE (NE-facing, dark — usually occluded) ──
+      ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.lineTo(flrRight.x, flrRight.y);
+      ctx.lineTo(flrTop.x, flrTop.y);
+      ctx.fill();
+
+      // ── FRONT-RIGHT FACE (SE-facing, lighter) ──
       ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
       ctx.beginPath();
       ctx.moveTo(right.x, right.y);
@@ -476,8 +494,8 @@ function renderMap(views) {
       ctx.lineTo(flrRight.x, flrRight.y);
       ctx.fill();
 
-      // ── LEFT FACE (SW-facing) ──
-      ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
+      // ── FRONT-LEFT FACE (SW-facing, medium) ──
+      ctx.fillStyle = `rgb(${tr * shade * 0.35 | 0},${tg * shade * 0.35 | 0},${tb * shade * 0.35 | 0})`;
       ctx.beginPath();
       ctx.moveTo(left.x, left.y);
       ctx.lineTo(bottom.x, bottom.y);
