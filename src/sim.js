@@ -56,34 +56,33 @@ export async function init(gridSize, seed, onProgress) {
 
   onProgress?.('sim', 70);
 
-  // Set scalar globals accessible from Python
-  pyodide.globals.set('_grid_size', gridSize);
-  pyodide.globals.set('_seed', seed);
-  pyodide.globals.set('_species_count', SPECIES_COUNT);
-  pyodide.globals.set('_traits_per_species', TRAITS_PER_SPECIES);
-  pyodide.globals.set('_max_rivers', MAX_RIVERS);
-  pyodide.globals.set('_max_river_points', MAX_RIVER_POINTS);
+  // Set values on globalThis so Python can access them via `from js import`
+  globalThis._grid_size = gridSize;
+  globalThis._seed = seed;
+  globalThis._species_count = SPECIES_COUNT;
+  globalThis._traits_per_species = TRAITS_PER_SPECIES;
+  globalThis._max_rivers = MAX_RIVERS;
+  globalThis._max_river_points = MAX_RIVER_POINTS;
 
-  // Pass layout as JSON string
+  // Layout as JSON string
   const layoutInfo = {};
   for (const [key, sec] of Object.entries(layout)) {
     if (sec && sec.offset !== undefined) {
       layoutInfo[key] = { offset: sec.offset, count: sec.count, byteSize: sec.byteSize };
     }
   }
-  pyodide.globals.set('_layout_json', JSON.stringify(layoutInfo));
+  globalThis._layout_json = JSON.stringify(layoutInfo);
 
-  // Expose typed array views as JS globals that Python can write to via JsProxy.
-  // Python does `from js import _js_globals` then `_js_globals[0] = value`
-  // This writes directly into the SharedArrayBuffer — true zero-copy on write.
-  pyodide.globals.set('_js_globals', views.globals);
-  pyodide.globals.set('_js_elevations', views.elevations);
-  pyodide.globals.set('_js_biomes', views.biomes);
-  pyodide.globals.set('_js_vegetation', views.vegetation);
-  pyodide.globals.set('_js_populations', views.populations);
-  pyodide.globals.set('_js_trait_means', views.traitMeans);
-  pyodide.globals.set('_js_trait_var', views.traitVar);
-  pyodide.globals.set('_js_tile_flags', views.tileFlags);
+  // Expose typed array views — Python writes to these via JsProxy,
+  // writes go directly into the ArrayBuffer that JS reads for rendering.
+  globalThis._js_globals = views.globals;
+  globalThis._js_elevations = views.elevations;
+  globalThis._js_biomes = views.biomes;
+  globalThis._js_vegetation = views.vegetation;
+  globalThis._js_populations = views.populations;
+  globalThis._js_trait_means = views.traitMeans;
+  globalThis._js_trait_var = views.traitVar;
+  globalThis._js_tile_flags = views.tileFlags;
 
   // Load and execute sim-core.py
   const simCode = await fetch('/sim-core.py').then(r => r.text());
