@@ -236,8 +236,9 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
-      // Journal check
+      // Journal + progressive disclosure checks
       checkForEntries(gen, pops, seasonVal);
+      checkDisclosures(gen, pops);
 
       // Render population chart + species cards + journal
       renderPopChart();
@@ -604,6 +605,56 @@ $('tooltip-close').addEventListener('click', () => tooltipOverlay.classList.add(
 tooltipOverlay.addEventListener('click', e => {
   if (e.target === tooltipOverlay) tooltipOverlay.classList.add('hidden');
 });
+
+// ── Progressive disclosure ──
+// Shows one-time hints as users encounter features for the first time.
+// Tracks which hints have been seen in localStorage.
+const DISCLOSED = new Set(JSON.parse(localStorage.getItem('evosim-disclosed') || '[]'));
+
+function disclose(key, title, body) {
+  if (DISCLOSED.has(key)) return;
+  DISCLOSED.add(key);
+  try { localStorage.setItem('evosim-disclosed', JSON.stringify([...DISCLOSED])); } catch {}
+  tooltipTitle.textContent = title;
+  tooltipBody.innerHTML = body;
+  tooltipOverlay.classList.remove('hidden');
+}
+
+// Trigger disclosures at key moments
+let disclosedFirstPlay = false;
+let disclosedFirstExtinction = false;
+let disclosedFirstJournal = false;
+
+function checkDisclosures(gen, pops) {
+  // First time pressing play
+  if (!disclosedFirstPlay && gen > 5) {
+    disclosedFirstPlay = true;
+    disclose('first-play',
+      'Your Observation Begins',
+      `<p>You're watching 5 species evolve in real time. The simulation runs <strong>population genetics equations</strong> every generation — the same math biologists use to model real evolution.</p>
+<p>The <strong>map</strong> shows terrain and species density. The <strong>chart</strong> tracks population over time. The <strong>journal</strong> records significant events.</p>
+<p>Drag to pan the map. Scroll to zoom. Right-drag to tilt.</p>
+<p>Click the <strong>?</strong> buttons anytime for detailed explanations of the science behind each panel.</p>`
+    );
+  }
+
+  // First extinction
+  if (!disclosedFirstExtinction) {
+    for (let s = 0; s < 5; s++) {
+      if (pops[s] === 0) {
+        disclosedFirstExtinction = true;
+        disclose('first-extinction',
+          'Extinction Event',
+          `<p>A species has gone extinct. In this simulation, extinction happens when population reaches zero across all tiles.</p>
+<p>Real extinctions follow the same pattern: populations decline through habitat loss, predation pressure, competition, disease, or genetic drift (random changes in small populations).</p>
+<p><strong>Genetic drift equation:</strong> <code>σ² = p(1−p) / 2N</code></p>
+<p>When N (population size) is small, random variance σ² is large — traits fluctuate wildly, and the population can drift to unsustainable values. This is why small populations are especially vulnerable.</p>`
+        );
+        break;
+      }
+    }
+  }
+}
 
 // ── LOD toggle ──
 const btnLod = $('btn-lod');
