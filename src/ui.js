@@ -68,6 +68,96 @@ document.querySelectorAll('.size-btn').forEach(btn => {
   });
 });
 
+// ── Setup preview ──
+const previewCanvas = $('preview-canvas');
+
+function renderPreview() {
+  // Generate a simple noise preview without Pyodide (JS-only approximation)
+  const dpr = window.devicePixelRatio || 1;
+  const w = previewCanvas.width = previewCanvas.offsetWidth * dpr;
+  const h = previewCanvas.height = previewCanvas.offsetHeight * dpr;
+  const ctx = previewCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cw = previewCanvas.offsetWidth;
+  const ch = previewCanvas.offsetHeight;
+
+  ctx.fillStyle = getMapBg();
+  ctx.fillRect(0, 0, cw, ch);
+
+  const gs = gridSize;
+  const seed = seedInput.value || 'ABC123';
+  const seedVal = seed.split('').reduce((a, c, i) => a + c.charCodeAt(0) * (i + 1), 0);
+
+  // Simple seeded pseudo-noise
+  function noise(x, y) {
+    const n = Math.sin(x * 127.1 + y * 311.7 + seedVal) * 43758.5453;
+    return n - Math.floor(n);
+  }
+
+  // Multi-octave value noise (JS approximation)
+  function fbm(x, y) {
+    let v = 0, amp = 1, tot = 0;
+    for (let o = 0; o < 4; o++) {
+      v += noise(x * (o + 1) * 0.7, y * (o + 1) * 0.7) * amp;
+      tot += amp;
+      amp *= 0.5;
+    }
+    return v / tot;
+  }
+
+  const tileW = (cw / gs) * 0.85;
+  const tileH = tileW * 0.5;
+  const heightScale = 40;
+  const offsetX = cw / 2;
+  const offsetY = (ch - gs * tileH * 0.5) / 2 + 20;
+
+  const cx = gs / 2, cy = gs / 2;
+  const maxDist = Math.sqrt(cx * cx + cy * cy);
+  const biomeColors = getBiomeColors();
+
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      let e = fbm(r / gs * 3, c / gs * 3);
+      const d = Math.sqrt((r - cy) ** 2 + (c - cx) ** 2) / maxDist;
+      e *= Math.max(0, 1 - d * 1.4);
+
+      let biome;
+      if (e < 0.15) biome = 0;
+      else if (e < 0.3) biome = 1;
+      else if (e < 0.5) biome = 2;
+      else if (e < 0.7) biome = 3;
+      else biome = 4;
+
+      const bc = biomeColors[biome];
+      const tr = bc[0] + e * 25;
+      const tg = bc[1] + e * 18;
+      const tb = bc[2] + e * 12;
+      const shade = 0.6 + e * 0.3;
+
+      const ix = (c - r) * tileW * 0.5;
+      const iy = (c + r) * tileH * 0.5;
+      const iz = e * heightScale;
+      const sx = offsetX + ix;
+      const sy = offsetY + iy - iz;
+
+      // Top face only (preview is simple)
+      ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - tileH * 0.5);
+      ctx.lineTo(sx + tileW * 0.5, sy);
+      ctx.lineTo(sx, sy + tileH * 0.5);
+      ctx.lineTo(sx - tileW * 0.5, sy);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+// Render preview when seed or size changes
+seedInput.addEventListener('input', renderPreview);
+document.querySelectorAll('.size-btn').forEach(b => b.addEventListener('click', () => setTimeout(renderPreview, 10)));
+setTimeout(renderPreview, 50);
+
 $('btn-begin').addEventListener('click', async () => {
   setup.classList.add('hidden');
   loader.classList.remove('hidden');
