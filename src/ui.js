@@ -90,16 +90,19 @@ function renderPreview() {
   const seed = seedInput.value || 'ABC123';
   const seedVal = seed.split('').reduce((a, c, i) => a + c.charCodeAt(0) * (i + 1), 0);
 
-  // Simple seeded pseudo-noise
-  function noise(x, y) {
-    const n = Math.sin(x * 127.1 + y * 311.7 + seedVal) * 43758.5453;
-    return n - Math.floor(n);
+  // Seeded pseudo-random
+  function seededRand(s) {
+    let x = Math.sin(s) * 43758.5453;
+    return x - Math.floor(x);
   }
 
-  // Multi-octave value noise (JS approximation)
+  function noise(x, y) {
+    return seededRand(x * 127.1 + y * 311.7 + seedVal);
+  }
+
   function fbm(x, y) {
     let v = 0, amp = 1, tot = 0;
-    for (let o = 0; o < 4; o++) {
+    for (let o = 0; o < 5; o++) {
       v += noise(x * (o + 1) * 0.7, y * (o + 1) * 0.7) * amp;
       tot += amp;
       amp *= 0.5;
@@ -107,21 +110,49 @@ function renderPreview() {
     return v / tot;
   }
 
+  // Generate island centers (same algorithm as Python)
+  const numIslands = Math.max(2, Math.floor(gs / 8) + Math.floor(seededRand(seedVal * 3) * 3));
+  const centers = [];
+  for (let attempt = 0; attempt < numIslands * 5 && centers.length < numIslands; attempt++) {
+    const cr = 0.1 * gs + seededRand(seedVal + attempt * 13) * gs * 0.8;
+    const cc = 0.1 * gs + seededRand(seedVal + attempt * 17 + 999) * gs * 0.8;
+    let ok = true;
+    for (const [er, ec] of centers) {
+      if (Math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.12) { ok = false; break; }
+    }
+    if (ok) {
+      const radius = gs * 0.06 + seededRand(seedVal + attempt * 7) * gs * 0.16;
+      const peak = 0.5 + seededRand(seedVal + attempt * 11) * 0.5;
+      const distort = 0.5 + seededRand(seedVal + attempt * 19) * 1.0;
+      centers.push([cr, cc, radius, peak, distort]);
+    }
+  }
+  if (centers.length === 0) centers.push([gs/2, gs/2, gs*0.2, 0.8, 1.0]);
+
   const tileW = (cw / gs) * 0.85;
   const tileH = tileW * 0.5;
   const heightScale = 40;
   const offsetX = cw / 2;
   const offsetY = (ch - gs * tileH * 0.5) / 2 + 20;
-
-  const cx = gs / 2, cy = gs / 2;
-  const maxDist = Math.sqrt(cx * cx + cy * cy);
   const biomeColors = getBiomeColors();
 
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
-      let e = fbm(r / gs * 3, c / gs * 3);
-      const d = Math.sqrt((r - cy) ** 2 + (c - cx) ** 2) / maxDist;
-      e *= Math.max(0, 1 - d * 1.4);
+      // Island influence
+      let maxInf = 0;
+      for (const [cr, cc, radius, peak, distort] of centers) {
+        const dr = (r - cr) * distort;
+        const dc = (c - cc) / Math.max(0.5, distort);
+        const dist = Math.sqrt(dr*dr + dc*dc);
+        if (dist < radius) {
+          const t = dist / radius;
+          const inf = peak * (0.5 + 0.5 * Math.cos(t * Math.PI));
+          if (inf > maxInf) maxInf = inf;
+        }
+      }
+
+      let e = maxInf * 0.65 + fbm(r / gs * 3, c / gs * 3) * 0.35;
+      e = Math.max(0, Math.min(1, e * 1.2 - 0.15));
 
       let biome;
       if (e < 0.15) biome = 0;
@@ -142,7 +173,6 @@ function renderPreview() {
       const sx = offsetX + ix;
       const sy = offsetY + iy - iz;
 
-      // Top face only (preview is simple)
       ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
       ctx.beginPath();
       ctx.moveTo(sx, sy - tileH * 0.5);

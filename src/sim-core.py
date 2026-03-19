@@ -137,23 +137,102 @@ def _value_noise(size, seed_val, octaves=4, persistence=0.5):
 
 
 def _generate_terrain(seed_str):
+    """
+    Generate archipelago terrain — multiple islands with varied features.
+    Uses multi-center radial falloff + noise for diverse island shapes.
+
+    The algorithm:
+    1. Place N island centers randomly (weighted toward spread)
+    2. Each center gets a radius, peak height, and shape distortion
+    3. For each tile, compute influence from all centers (inverse distance)
+    4. Overlay multi-octave noise for surface detail
+    5. Apply erosion ridges for mountain features on large islands
+    """
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
     np.random.seed(seed_val % (2**31))
+    rng = np.random.RandomState(seed_val)
 
-    noise = _value_noise(GRID_SIZE, seed_val)
-    cx, cy = GRID_SIZE / 2, GRID_SIZE / 2
-    max_dist = math.sqrt(cx**2 + cy**2)
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            d = math.sqrt((r - cy)**2 + (c - cx)**2) / max_dist
-            noise[r, c] *= max(0, 1 - d * 1.4)
+    gs = GRID_SIZE
+    result = np.zeros((gs, gs), dtype=np.float32)
 
-    lo, hi = noise.min(), noise.max()
+    # Number of islands scales with grid size
+    num_islands = max(2, gs // 8 + rng.randint(0, 3))
+
+    # Generate island centers with minimum spacing
+    centers = []
+    for _ in range(num_islands * 5):  # try many, keep spaced ones
+        cr = rng.uniform(gs * 0.1, gs * 0.9)
+        cc = rng.uniform(gs * 0.1, gs * 0.9)
+        # Check spacing
+        too_close = False
+        for (er, ec, _, _, _) in centers:
+            if math.sqrt((cr - er)**2 + (cc - ec)**2) < gs * 0.12:
+                too_close = True
+                break
+        if not too_close:
+            radius = rng.uniform(gs * 0.06, gs * 0.22)
+            peak = rng.uniform(0.5, 1.0)
+            # Shape distortion — makes islands non-circular
+            distort = rng.uniform(0.5, 1.5)
+            centers.append((cr, cc, radius, peak, distort))
+        if len(centers) >= num_islands:
+            break
+
+    if not centers:
+        centers = [(gs/2, gs/2, gs*0.2, 0.8, 1.0)]
+
+    # Build elevation from island influences
+    for r in range(gs):
+        for c in range(gs):
+            max_influence = 0.0
+            for cr_c, cc_c, radius, peak, distort in centers:
+                # Elliptical distance with distortion
+                dr = (r - cr_c) * distort
+                dc = (c - cc_c) / max(0.5, distort)
+                dist = math.sqrt(dr**2 + dc**2)
+                # Smooth falloff
+                if dist < radius:
+                    # Cosine falloff for natural island shape
+                    t = dist / radius
+                    influence = peak * (0.5 + 0.5 * math.cos(t * math.pi))
+                    max_influence = max(max_influence, influence)
+            result[r, c] = max_influence
+
+    # Overlay noise for surface detail and coastline irregularity
+    noise = _value_noise(gs, seed_val, octaves=5, persistence=0.55)
+    result = result * 0.65 + noise * 0.35
+
+    # Ridge features — sharp elevation spines on high terrain
+    ridge_noise = _value_noise(gs, seed_val + 7777, octaves=3, persistence=0.4)
+    for r in range(gs):
+        for c in range(gs):
+            if result[r, c] > 0.4:
+                # Ridge: absolute value of noise creates sharp peaks
+                ridge = abs(ridge_noise[r, c] - 0.5) * 2
+                result[r, c] += ridge * 0.2 * (result[r, c] - 0.3)
+
+    # Normalize to 0-1
+    lo, hi = result.min(), result.max()
     if hi > lo:
-        noise = (noise - lo) / (hi - lo)
-    elevations[:] = noise
+        result = (result - lo) / (hi - lo)
 
+    # Push water lower — more ocean between islands
+    result = np.clip(result * 1.2 - 0.15, 0, 1)
+
+    elevations[:] = result
+
+    # Assign biomes
+    _assign_biomes()
+
+    # Initialize vegetation
+    for r in range(gs):
+        for c in range(gs):
+            vegetation[r, c] = min(1.0, VEG_REGROWTH[biomes[r, c]] * 10)
+
+
+def _assign_biomes():
+    """Classify biomes from elevation thresholds."""
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             e = elevations[r, c]
@@ -162,10 +241,6 @@ def _generate_terrain(seed_str):
             elif e < 0.50: biomes[r, c] = BIOME_REED_BEDS
             elif e < 0.70: biomes[r, c] = BIOME_TIDAL_FLATS
             else:          biomes[r, c] = BIOME_ROCKY_SHORE
-
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            vegetation[r, c] = min(1.0, VEG_REGROWTH[biomes[r, c]] * 10)
 
 
 # ── POPULATION SEEDING ────────────────────────────────────────────────────────
@@ -506,13 +581,8 @@ def _apply_erosion():
             if diff > 0:
                 elevations[r, c] -= EROSION_RATE * diff
                 elevations[r, c] = max(0, elevations[r, c])
-                # Reclassify biome if elevation changed significantly
-                new_e = elevations[r, c]
-                if new_e < 0.15: biomes[r, c] = BIOME_DEEP_WATER
-                elif new_e < 0.30: biomes[r, c] = BIOME_SHALLOW_MARSH
-                elif new_e < 0.50: biomes[r, c] = BIOME_REED_BEDS
-                elif new_e < 0.70: biomes[r, c] = BIOME_TIDAL_FLATS
-                else: biomes[r, c] = BIOME_ROCKY_SHORE
+    # Reclassify biomes after elevation changes
+    _assign_biomes()
 
 
 # ── RIVERS & TERRAIN DYNAMICS ─────────────────────────────────────────────────
@@ -520,8 +590,10 @@ def _apply_erosion():
 # They spawn at high elevation, advance downhill, erode banks, form oxbows.
 # See evolution-simulation-research.md §12.
 
-RIVER_GEO_TICK = 200       # gens between river advance steps
-RIVER_SPAWN_PROB = 0.003   # per-gen chance of new river
+# Scale geological timings with grid size — larger grids need more gens between ticks
+# because each gen already processes more tiles
+RIVER_GEO_TICK = max(100, 50 * GRID_SIZE // 8)  # ~200 at 32, ~400 at 64
+RIVER_SPAWN_PROB = 0.005   # slightly higher for larger grids with more high terrain
 RIVER_EROSION = 0.008      # outer-bank erosion per geo tick
 RIVER_DEPOSIT = 0.004      # inner-bank deposition per geo tick
 RIVER_REROUTE_N = 3        # re-path every N geo ticks
@@ -1015,9 +1087,9 @@ def _classify_epoch():
 # stress through volcanic events that transform terrain.
 # See evolution-simulation-research.md §12.9-12.10
 
-TECTONIC_TICK = 500       # gens between tectonic updates
+TECTONIC_TICK = max(200, 100 * GRID_SIZE // 8)  # ~400 at 32, ~800 at 64
 VOLCANIC_PROB = 0.002     # per-gen chance of eruption when stress is high
-PLATE_COUNT = 3           # number of tectonic plates
+PLATE_COUNT = max(3, GRID_SIZE // 16)  # 3 at 32, 4 at 64, 8 at 128
 
 tectonic_plates = []  # list of {id, tiles: [(r,c),...], drift: (dr,dc), stress: float}
 
@@ -1150,17 +1222,8 @@ def _volcanic_eruption(plate):
     # Set volcanic tile flag (bit 1)
     tile_flags[vr, vc] |= 2
 
-    # Reclassify biomes in affected area
-    for dr in range(-2, 3):
-        for dc in range(-2, 3):
-            nr, nc = vr + dr, vc + dc
-            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
-                e = elevations[nr, nc]
-                if   e < 0.15: biomes[nr, nc] = BIOME_DEEP_WATER
-                elif e < 0.30: biomes[nr, nc] = BIOME_SHALLOW_MARSH
-                elif e < 0.50: biomes[nr, nc] = BIOME_REED_BEDS
-                elif e < 0.70: biomes[nr, nc] = BIOME_TIDAL_FLATS
-                else:          biomes[nr, nc] = BIOME_ROCKY_SHORE
+    # Reclassify biomes after terrain change
+    _assign_biomes()
 
     events_buffer.append({'gen': generation, 'type': 'volcanic',
         'text': f'Gen {generation}. Eruption at ({vr},{vc})! '
@@ -1234,10 +1297,14 @@ def step_simulation(n=1):
         _check_events(season)
         _apply_active_events(season)
 
+        # Migration frequency scales with LOD and grid size
         if lod_level == 0:
             _step_migration()
-        elif generation % 5 == 0:
-            _step_migration()
+        else:
+            # Simplified: migrate less often on larger grids
+            interval = max(2, G2 // 500)
+            if generation % interval == 0:
+                _step_migration()
 
         # Terrain dynamics
         if generation % 10 == 0:  # erosion every 10 gens (slow process)
