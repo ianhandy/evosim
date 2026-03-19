@@ -45,6 +45,34 @@ lod_level = 0
 events_buffer = []
 total_deaths_last = 0
 
+# Speciation tracking
+# A species is "speciated" when its species-specific trait diverges >0.3
+# between two spatial subpopulations for >100 consecutive generations.
+speciation_detected = [False] * NUM_SPECIES
+speciation_gens = [0] * NUM_SPECIES  # consecutive gens with divergence >threshold
+
+# Extinction tracking
+extinctions = []  # list of {species, gen, peak_pop, gens_survived, cause, last_tile}
+species_alive = [True] * NUM_SPECIES
+peak_pops = [0] * NUM_SPECIES
+first_seen_gen = [0] * NUM_SPECIES
+last_seen_tile = [(0, 0)] * NUM_SPECIES
+pop_history_window = [[0] * 100 for _ in range(NUM_SPECIES)]  # rolling 100-gen window
+
+# Epoch system
+current_epoch = 'the_quiet'
+epoch_since = 0
+EPOCH_NAMES = {
+    'the_quiet': 'The Quiet',
+    'expansion': 'Age of Expansion',
+    'drought': 'The Great Drought',
+    'predator_reign': "Predator's Reign",
+    'divergence': 'The Divergence',
+    'twilight': 'Twilight',
+    'last_stand': 'Last Stand',
+    'equilibrium': 'The Long Equilibrium',
+}
+
 # ── JS BUFFER VIEWS (for syncing) ────────────────────────────────────────────
 # These are JsProxy objects pointing to typed arrays on the SharedArrayBuffer.
 # We write to them at the end of each step via _sync_to_buffer().
@@ -649,6 +677,192 @@ def _sync_rivers_to_buffer():
     _js_river_meta.set(to_js(np.array(meta_data[:max_rivers * 4], dtype=np.float32)))
 
 
+# ── SPECIATION DETECTION ──────────────────────────────────────────────────────
+
+SPECIATION_THRESHOLD = 0.3   # trait divergence between subpopulations
+SPECIATION_GENS_REQUIRED = 100  # consecutive gens above threshold
+
+def _check_speciation():
+    """
+    Detect speciation via spatial trait divergence.
+    Split tiles into two groups by geography (above/below median row),
+    compare mean species-specific trait between groups.
+    If divergence > threshold for > N gens → speciation.
+
+    This mirrors how real biologists detect speciation: measuring FST
+    (fixation index) between spatially separated populations.
+    """
+    mid = GRID_SIZE // 2
+    for s in range(NUM_SPECIES):
+        if speciation_detected[s] or not species_alive[s]:
+            continue
+
+        # Split into north/south subpopulations
+        north_sum, north_pop = 0.0, 0
+        south_sum, south_pop = 0.0, 0
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                p = int(pops[r, c, s])
+                if p <= 0:
+                    continue
+                t = traits[r, c, s, T_SPECIFIC]
+                if r < mid:
+                    north_sum += t * p
+                    north_pop += p
+                else:
+                    south_sum += t * p
+                    south_pop += p
+
+        if north_pop < 10 or south_pop < 10:
+            speciation_gens[s] = 0
+            continue
+
+        north_mean = north_sum / north_pop
+        south_mean = south_sum / south_pop
+        divergence = abs(north_mean - south_mean)
+
+        if divergence > SPECIATION_THRESHOLD:
+            speciation_gens[s] += 1
+            if speciation_gens[s] >= SPECIATION_GENS_REQUIRED:
+                speciation_detected[s] = True
+                events_buffer.append({'gen': generation, 'type': 'speciation',
+                    'text': f'Gen {generation}. Speciation confirmed in {SPECIES_FULL[s]}. '
+                            f'Northern and southern populations have diverged beyond recognition. '
+                            f'Trait divergence: {divergence:.3f}. '
+                            f'Two distinct forms now exist.'})
+        else:
+            speciation_gens[s] = max(0, speciation_gens[s] - 1)
+
+
+# ── EXTINCTION DETECTION ─────────────────────────────────────────────────────
+
+def _check_extinction():
+    """
+    Detect when a species reaches zero total population.
+    Determine cause of death by analyzing recent population history.
+    """
+    for s in range(NUM_SPECIES):
+        if not species_alive[s]:
+            continue
+
+        total = int(np.sum(pops[:, :, s]))
+
+        # Track peak and last-seen
+        if total > peak_pops[s]:
+            peak_pops[s] = total
+        if total > 0:
+            # Find a tile where they exist (for last_seen_tile)
+            for r in range(GRID_SIZE):
+                for c in range(GRID_SIZE):
+                    if pops[r, c, s] > 0:
+                        last_seen_tile[s] = (r, c)
+
+        # Rolling pop history
+        pop_history_window[s][generation % 100] = total
+
+        if total == 0:
+            species_alive[s] = False
+            cause = _determine_cause(s)
+            lr, lc = last_seen_tile[s]
+            ext = {
+                'species': s,
+                'gen': generation,
+                'peak_pop': peak_pops[s],
+                'gens_survived': generation - first_seen_gen[s],
+                'cause': cause,
+                'last_tile': [lr, lc],
+            }
+            extinctions.append(ext)
+            events_buffer.append({'gen': generation, 'type': 'extinction',
+                'text': f'Gen {generation}. {SPECIES_FULL[s]} — extinct. '
+                        f'Peak population: {peak_pops[s]}. Survived {ext["gens_survived"]} generations. '
+                        f'Cause: {cause}. Last seen at ({lr},{lc}).',
+                'data': ext})
+
+
+def _determine_cause(s):
+    """
+    Analyze recent history to determine likely cause of extinction.
+    Looks at what was happening in the ecosystem when the decline began.
+    """
+    # Check predation pressure — were predators high while this species declined?
+    for pred, prey, _, _ in PREDATION:
+        if prey == s:
+            pred_total = int(np.sum(pops[:, :, pred]))
+            if pred_total > 50:
+                return 'predation'
+
+    # Check if disease was active targeting this species
+    for evt in active_events:
+        if evt['type'] == 'disease' and evt.get('species') == s:
+            return 'disease'
+
+    # Check vegetation (habitat quality)
+    mean_veg = float(np.mean(vegetation))
+    if mean_veg < 0.2 and s in (CRAWLER, VELOTHRIX):
+        return 'habitat_loss'
+
+    # Check if competitor populations are high
+    for sa, sb, _ in COMPETITION:
+        competitor = sb if sa == s else (sa if sb == s else None)
+        if competitor is not None:
+            comp_total = int(np.sum(pops[:, :, competitor]))
+            if comp_total > 200:
+                return 'competition'
+
+    # Small population for a long time → drift
+    recent = pop_history_window[s]
+    if max(recent) < 30:
+        return 'genetic_drift'
+
+    return 'unknown'
+
+
+# ── EPOCH CLASSIFICATION ─────────────────────────────────────────────────────
+
+def _classify_epoch():
+    """
+    Determine the current epoch based on ecosystem state.
+    Priority order: most dramatic state wins.
+    """
+    global current_epoch, epoch_since
+
+    alive_count = sum(1 for a in species_alive if a)
+    total_pop = sum(int(np.sum(pops[:, :, s])) for s in range(NUM_SPECIES))
+    any_speciation = any(speciation_detected)
+
+    # Priority order
+    if alive_count <= 1:
+        new = 'last_stand'
+    elif alive_count <= 3:
+        new = 'twilight'
+    elif _has_active_event('drought'):
+        new = 'drought'
+    elif any(int(np.sum(pops[:, :, LEVIATHAN])) > total_pop * 0.4 for _ in [0] if total_pop > 0):
+        new = 'predator_reign'
+    elif any_speciation:
+        new = 'divergence'
+    elif generation < 50:
+        new = 'the_quiet'
+    elif total_pop > 0:
+        # Check if populations are stable (low variance over 100 gens)
+        # Simplified: if all 5 alive and gen > 500
+        if alive_count == 5 and generation > 500:
+            new = 'equilibrium'
+        else:
+            new = 'expansion'
+    else:
+        new = 'the_quiet'
+
+    if new != current_epoch:
+        old_name = EPOCH_NAMES.get(current_epoch, current_epoch)
+        new_name = EPOCH_NAMES.get(new, new)
+        events_buffer.append({'gen': generation, 'type': 'epoch',
+            'text': f'Gen {generation}. A new era begins: {new_name}.'})
+        current_epoch = new
+        epoch_since = generation
+
+
 # ── BUFFER SYNC ───────────────────────────────────────────────────────────────
 
 def _sync_to_buffer():
@@ -667,6 +881,7 @@ def _sync_to_buffer():
     # Globals (small — element access is fine)
     _js_globals[0] = float(generation)
     _js_globals[1] = _season()
+    _js_globals[2] = float(list(EPOCH_NAMES.keys()).index(current_epoch))  # epoch_id
     for s in range(NUM_SPECIES):
         _js_globals[6 + s] = float(np.sum(pops[:, :, s]))
     _js_globals[12] = float(total_deaths_last)
@@ -720,6 +935,13 @@ def step_simulation(n=1):
         # Rivers (geological timescale)
         _spawn_river()
         _step_rivers()
+
+        # Detection systems
+        _check_extinction()
+        if generation % 10 == 0:  # check speciation every 10 gens (expensive)
+            _check_speciation()
+        if generation % 20 == 0:  # epoch classification
+            _classify_epoch()
 
     _sync_to_buffer()
     _sync_rivers_to_buffer()

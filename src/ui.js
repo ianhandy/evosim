@@ -236,9 +236,15 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
+      // Epoch display
+      updateEpoch(views.globals[GLOBAL.EPOCH_ID]);
+
       // Journal + progressive disclosure checks
       checkForEntries(gen, pops, seasonVal);
       checkDisclosures(gen, pops);
+
+      // Sim events (extinctions, speciation)
+      checkSimEvents();
 
       // Render population chart + species cards + journal
       renderPopChart();
@@ -580,6 +586,24 @@ function renderSpeciesCards(totalPops) {
   }
 }
 
+// ── Epoch display ──
+const epochBanner = $('epoch-banner');
+const epochNameEl = $('epoch-name');
+const EPOCH_LIST = ['The Quiet', 'Age of Expansion', 'The Great Drought', "Predator's Reign",
+                    'The Divergence', 'Twilight', 'Last Stand', 'The Long Equilibrium'];
+let lastEpochId = -1;
+
+function updateEpoch(epochId) {
+  const id = Math.floor(epochId);
+  if (id === lastEpochId) return;
+  lastEpochId = id;
+  const name = EPOCH_LIST[id] || 'Unknown';
+  epochNameEl.textContent = name;
+  epochBanner.classList.remove('hidden');
+  epochBanner.classList.add('transitioning');
+  setTimeout(() => epochBanner.classList.remove('transitioning'), 1500);
+}
+
 // ── Journal feed ──
 const journalFeed = $('journal-feed');
 let lastJournalCount = 0;
@@ -691,6 +715,23 @@ function checkDisclosures(gen, pops) {
         );
         break;
       }
+    }
+  }
+}
+
+// Check for speciation/extinction events from the queue
+function checkSimEvents() {
+  const events = sim.getEventQueue();
+  for (const evt of events) {
+    if (evt.type === 'speciation' && !DISCLOSED.has('first-speciation')) {
+      disclose('first-speciation',
+        'Speciation Detected',
+        `<p>A species has <strong>speciated</strong> — split into two genetically distinct populations. This is evolution's most dramatic outcome.</p>
+<p>Scientists measure this using <strong>FST (fixation index)</strong>, which quantifies genetic divergence between populations:</p>
+<p><code>FST = (Ht − Hs) / Ht</code></p>
+<p>Where Ht is total genetic variance and Hs is within-subpopulation variance. FST > 0.25 is considered very high divergence in real biology.</p>
+<p>In this simulation, speciation is detected when the species-specific trait diverges by more than 0.3 between northern and southern populations for 100+ consecutive generations.</p>`
+      );
     }
   }
 }

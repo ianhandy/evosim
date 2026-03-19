@@ -325,6 +325,37 @@ html, body {
 #tooltip-body strong { color: var(--gold-light); }
 #tooltip-close { display: block; margin-left: auto; }
 
+/* ── Epoch Banner ── */
+#epoch-banner {
+  position: absolute;
+  top: 8px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  text-align: center;
+  pointer-events: none;
+}
+#epoch-name {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  background: rgba(0,0,0,0.4);
+  padding: 3px 12px;
+  border-radius: 3px;
+  transition: color 0.5s, opacity 0.5s;
+}
+#epoch-banner.transitioning #epoch-name {
+  color: var(--gold-light);
+  animation: epoch-flash 1.5s ease;
+}
+@keyframes epoch-flash {
+  0% { opacity: 0; transform: scale(1.1); }
+  30% { opacity: 1; }
+  100% { transform: scale(1); }
+}
+
 /* ── Map Hint ── */
 .map-hint {
   position: absolute;
