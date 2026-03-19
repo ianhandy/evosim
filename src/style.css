@@ -439,8 +439,20 @@ html, body {
 
   #panel {
     border-left: none; border-top: 1px solid var(--border);
-    max-height: 40vh;
+    max-height: 45vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
+
+  #pentagon-chart { height: 120px; }
+  #pop-chart { height: 120px; }
+  #journal-feed { max-height: 100px; }
+  .sp-portrait { width: 32px !important; height: 32px !important; }
+  .sp-name { font-size: 9px; }
+  .sp-pop { font-size: 10px; }
+
+  #epoch-banner { top: 4px; }
+  #epoch-name { font-size: 9px; padding: 2px 8px; }
 
   #setup h1 { font-size: 24px; }
   #seed-input { font-size: 16px; }
@@ -453,4 +465,16 @@ html, body {
   #header h1 { font-size: 12px; }
   .btn { font-size: 10px; padding: 4px 8px; min-height: 32px; }
   .speed-btn { padding: 4px 6px; }
+  #pentagon-chart { height: 100px; }
+  #pop-chart { height: 100px; }
+  .panel-header { padding: 2px 0; }
+  .panel-title { font-size: 8px; }
+  .help-btn { width: 14px; height: 14px; font-size: 8px; }
+  #journal-feed { max-height: 80px; }
+  .journal-entry { font-size: 9px; padding: 3px 6px; }
+  #tooltip-card { padding: 12px 14px; }
+  #tooltip-title { font-size: 12px; }
+  #tooltip-body { font-size: 10px; }
+  .header-right .btn-small { display: none; } /* hide save/lod on tiny screens */
+  .theme-select { font-size: 9px; padding: 2px 4px; }
 }
