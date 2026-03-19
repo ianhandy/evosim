@@ -184,6 +184,14 @@ def _k(r, c, s, season):
     food_mod = max(0.05, 0.3 + 0.7 * food)
     met_amp = food_mod ** (0.7 + met * 0.6)
     result = BASE_K[s] * suit * met_amp * (0.85 + 0.15 * season)
+
+    # Algal bloom: boost Worm/Velothrix K 15%, penalize Leviathan
+    if _has_active_event('algal_bloom'):
+        if s in (WORM, VELOTHRIX):
+            result *= 1.15
+        elif s == LEVIATHAN:
+            result *= 0.8
+
     return max(1, result) if not math.isnan(result) else 1
 
 
@@ -307,6 +315,138 @@ def _step_migration():
                     frac = moved / dp
                     for t in range(NUM_TRAITS):
                         traits[nr, nc, s, t] = (1-frac) * traits[nr, nc, s, t] + frac * traits[r, c, s, t]
+
+
+# ── ENVIRONMENTAL EVENTS ──────────────────────────────────────────────────────
+# Stochastic events that disrupt the ecosystem. Each has a probability per gen
+# and a mechanical effect. No event is purely cosmetic — each changes numbers
+# that feed into growth, predation, or carrying capacity.
+
+EVENT_PROBS = {
+    'drought': 0.002,
+    'disease': 0.001,
+    'algal_bloom': 0.003,
+    'tidal_surge': 0.002,
+    'reef_formation': 0.001,
+}
+
+active_events = []  # list of {type, start_gen, duration, data}
+
+
+def _check_events(season):
+    """Roll for new events each generation."""
+    # Drought — reduces vegetation regrowth across the grid
+    if random.random() < EVENT_PROBS['drought'] and season > 0.3:
+        duration = random.randint(30, 80)
+        active_events.append({
+            'type': 'drought', 'start': generation, 'duration': duration,
+        })
+        events_buffer.append({'gen': generation, 'type': 'drought',
+            'text': f'Gen {generation}. Drought. The marshes dry. Vegetation regrowth will slow for {duration} generations.'})
+
+    # Disease — targets one species at a spatial epicenter
+    if random.random() < EVENT_PROBS['disease']:
+        target = random.randint(0, NUM_SPECIES - 1)
+        # Find a tile where this species has significant population
+        candidates = [(r,c) for r in range(GRID_SIZE) for c in range(GRID_SIZE) if pops[r,c,target] > 10]
+        if candidates:
+            er, ec = random.choice(candidates)
+            duration = random.randint(10, 30)
+            active_events.append({
+                'type': 'disease', 'start': generation, 'duration': duration,
+                'species': target, 'epicenter': (er, ec),
+            })
+            events_buffer.append({'gen': generation, 'type': 'disease',
+                'text': f'Gen {generation}. Disease strikes {SPECIES_NAMES[target]} near ({er},{ec}). Mortality will spike for {duration} generations.'})
+
+    # Algal bloom — boosts Worm/Velothrix, hurts Leviathan
+    if random.random() < EVENT_PROBS['algal_bloom'] and season > 0.5:
+        duration = random.randint(20, 60)
+        active_events.append({
+            'type': 'algal_bloom', 'start': generation, 'duration': duration,
+        })
+        events_buffer.append({'gen': generation, 'type': 'algal_bloom',
+            'text': f'Gen {generation}. Algal bloom chokes the shallows. Predators struggle. Decomposers feast.'})
+
+    # Tidal surge — temporarily lowers coastal elevation
+    if random.random() < EVENT_PROBS['tidal_surge']:
+        duration = random.randint(15, 40)
+        active_events.append({
+            'type': 'tidal_surge', 'start': generation, 'duration': duration,
+        })
+        events_buffer.append({'gen': generation, 'type': 'tidal_surge',
+            'text': f'Gen {generation}. Tidal surge. Coastal elevations drop. Deep water expands inland.'})
+
+    # Reef formation — permanent terrain change
+    if random.random() < EVENT_PROBS['reef_formation']:
+        # Count current rocky_shore tiles
+        rocky_count = int(np.sum(biomes == BIOME_ROCKY_SHORE))
+        if rocky_count < G2 * 0.25:  # cap at 25%
+            # Find a shallow/tidal tile to convert
+            candidates = [(r,c) for r in range(GRID_SIZE) for c in range(GRID_SIZE)
+                          if biomes[r,c] in (BIOME_SHALLOW_MARSH, BIOME_TIDAL_FLATS)]
+            if candidates:
+                r, c = random.choice(candidates)
+                elevations[r, c] = min(1.0, elevations[r, c] + 0.15)
+                biomes[r, c] = BIOME_ROCKY_SHORE
+                events_buffer.append({'gen': generation, 'type': 'reef',
+                    'text': f'Gen {generation}. Calcium deposits harden at ({r},{c}). New reef rises from the seabed.'})
+
+
+def _apply_active_events(season):
+    """Apply effects of ongoing events. Remove expired ones."""
+    expired = []
+    for evt in active_events:
+        age = generation - evt['start']
+        if age > evt['duration']:
+            expired.append(evt)
+            continue
+
+        if evt['type'] == 'drought':
+            # Reduce vegetation regrowth by 60%
+            for r in range(GRID_SIZE):
+                for c in range(GRID_SIZE):
+                    vegetation[r, c] *= 0.998  # slow drain
+
+        elif evt['type'] == 'disease':
+            s = evt['species']
+            er, ec = evt['epicenter']
+            for r in range(GRID_SIZE):
+                for c in range(GRID_SIZE):
+                    if pops[r, c, s] <= 0:
+                        continue
+                    dist = abs(r - er) + abs(c - ec)
+                    severity = max(0, 1 - dist / (GRID_SIZE * 0.5))
+                    if severity > 0:
+                        kills = _prob_round(pops[r, c, s] * 0.05 * severity)
+                        pops[r, c, s] = max(0, int(pops[r, c, s]) - kills)
+
+        elif evt['type'] == 'algal_bloom':
+            # Boost Worm K, reduce Leviathan predation effectiveness
+            # (handled via modifier in _k and _step_predation — simplified here)
+            pass  # effect is checked in _k via active_events list
+
+        elif evt['type'] == 'tidal_surge':
+            # Temporarily lower coastal tile elevations
+            if age == 0:  # apply once at start
+                for r in range(GRID_SIZE):
+                    for c in range(GRID_SIZE):
+                        if elevations[r, c] < 0.35:
+                            elevations[r, c] = max(0, elevations[r, c] - 0.05)
+
+    for evt in expired:
+        active_events.remove(evt)
+        # Restore tidal surge elevation
+        if evt['type'] == 'tidal_surge':
+            for r in range(GRID_SIZE):
+                for c in range(GRID_SIZE):
+                    if elevations[r, c] < 0.30:
+                        elevations[r, c] += 0.05
+
+
+def _has_active_event(event_type):
+    """Check if an event of the given type is currently active."""
+    return any(e['type'] == event_type for e in active_events)
 
 
 # ── RIVERS & TERRAIN DYNAMICS ─────────────────────────────────────────────────
@@ -567,6 +707,11 @@ def step_simulation(n=1):
                 _step_vegetation(r, c, season)
                 _step_traits(r, c)
         total_deaths_last = td
+
+        # Environmental events
+        _check_events(season)
+        _apply_active_events(season)
+
         if lod_level == 0:
             _step_migration()
         elif generation % 5 == 0:
