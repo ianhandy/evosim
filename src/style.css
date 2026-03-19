@@ -292,6 +292,55 @@ html, body {
   background: rgba(221,193,101,0.08);
 }
 
+/* ── End Observation Overlay ── */
+#end-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.8);
+  z-index: 450;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+#end-card {
+  background: var(--card);
+  border: 2px solid var(--gold);
+  border-radius: 6px;
+  padding: 24px 28px;
+  max-width: 420px; width: 100%;
+  text-align: center;
+}
+#end-title {
+  font-family: var(--sans);
+  font-size: 20px; font-weight: 800;
+  color: var(--gold);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+#end-seed { font-size: 10px; color: var(--dim); margin-bottom: 16px; }
+#end-stats {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px; margin-bottom: 14px;
+}
+.end-stat {
+  text-align: center; padding: 6px;
+  background: var(--bg); border-radius: 3px;
+}
+.end-stat-val { font-size: 16px; font-weight: 700; color: var(--gold); }
+.end-stat-label { font-size: 8px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+#end-species-list { margin-bottom: 14px; text-align: left; }
+.end-sp {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 0; font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+.end-sp:last-child { border-bottom: none; }
+.end-sp-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.end-sp-name { flex: 1; color: var(--gold-light); }
+.end-sp-status { color: var(--dim); font-size: 10px; }
+.end-sp-status.alive { color: var(--green); }
+.end-sp-status.dead { color: var(--red); }
+#end-actions { display: flex; gap: 8px; justify-content: center; }
+
 /* ── Eulogy Overlay ── */
 #eulogy-overlay {
   position: fixed; inset: 0;

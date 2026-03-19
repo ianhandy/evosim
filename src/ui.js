@@ -361,9 +361,10 @@ function startRenderLoop() {
       // Epoch display
       updateEpoch(views.globals[GLOBAL.EPOCH_ID]);
 
-      // Journal + progressive disclosure checks
+      // Journal + progressive disclosure + extinction checks
       checkForEntries(gen, pops, seasonVal);
       checkDisclosures(gen, pops);
+      checkAllExtinct(pops);
 
       // Sim events (extinctions, speciation)
       checkSimEvents();
@@ -959,7 +960,32 @@ let disclosedFirstPlay = false;
 let disclosedFirstExtinction = false;
 let disclosedFirstJournal = false;
 
+let disclosedGenMilestones = new Set();
+
 function checkDisclosures(gen, pops) {
+  // Gen 100 milestone
+  if (gen >= 100 && !disclosedGenMilestones.has(100)) {
+    disclosedGenMilestones.add(100);
+    disclose('gen-100',
+      '100 Generations',
+      `<p>100 generations have passed. In real biology, a "generation" varies wildly — fruit flies: 2 weeks, humans: 25 years, bristlecone pines: centuries.</p>
+<p>In this simulation, each generation runs the full ecological cycle: growth, predation, competition, migration, trait evolution. By now, genetic drift has started to differentiate populations across tiles.</p>
+<p>Watch the trait bars on the species cards — they'll start shifting as natural selection and drift take effect.</p>`
+    );
+  }
+
+  // Gen 500 — explain carrying capacity
+  if (gen >= 500 && !disclosedGenMilestones.has(500)) {
+    disclosedGenMilestones.add(500);
+    disclose('gen-500',
+      'Carrying Capacity',
+      `<p>By now you may have noticed populations stabilize around certain levels. This is <strong>carrying capacity (K)</strong> — the maximum population a habitat can sustain.</p>
+<p><code>dN/dt = rN(1 − N/K)</code></p>
+<p>When N approaches K, growth slows to zero. When N exceeds K, the population declines. This is the logistic equation — the foundation of population ecology.</p>
+<p>K isn't fixed — it depends on food, season, biome, and species traits. A drought lowers K. A high-metabolism species has higher K when food is abundant but crashes harder when it's scarce.</p>`
+    );
+  }
+
   // First time pressing play
   if (!disclosedFirstPlay && gen > 5) {
     disclosedFirstPlay = true;
@@ -1108,6 +1134,78 @@ function populateThemes() {
 }
 populateThemes();
 themeSelect.addEventListener('change', (e) => setTheme(e.target.value));
+
+// ── End Observation ──
+const endOverlay = $('end-overlay');
+let observationEnded = false;
+
+function showEndScreen() {
+  if (observationEnded) return;
+  observationEnded = true;
+
+  // Pause
+  if (playing) { sim.pause(); playing = false; btnPlay.textContent = '▶ Play'; btnPlay.classList.remove('active'); }
+
+  const views = sim.getViews();
+  const gen = Math.floor(views.globals[GLOBAL.GENERATION]);
+  const pops = [];
+  for (let s = 0; s < 5; s++) pops.push(views.globals[GLOBAL.TOTAL_POP_0 + s]);
+  const alive = pops.filter(p => p > 0).length;
+  const total = pops.reduce((a, b) => a + b, 0);
+
+  $('end-seed').textContent = `Seed: ${seedInput.value} · Grid: ${gridSize}×${gridSize}`;
+  $('end-stats').innerHTML = `
+    <div class="end-stat"><div class="end-stat-val">${gen.toLocaleString()}</div><div class="end-stat-label">Generations</div></div>
+    <div class="end-stat"><div class="end-stat-val">${alive}</div><div class="end-stat-label">Species Alive</div></div>
+    <div class="end-stat"><div class="end-stat-val">${Math.floor(total).toLocaleString()}</div><div class="end-stat-label">Total Pop</div></div>
+    <div class="end-stat"><div class="end-stat-val">${knownExtinctions.size}</div><div class="end-stat-label">Extinctions</div></div>
+  `;
+
+  let spHtml = '';
+  for (let s = 0; s < 5; s++) {
+    const alive = pops[s] > 0;
+    spHtml += `<div class="end-sp">
+      <div class="end-sp-dot" style="background:${SPECIES_COLORS[s]}${alive ? '' : ';opacity:0.3'}"></div>
+      <div class="end-sp-name"${alive ? '' : ' style="text-decoration:line-through;opacity:0.5"'}>${SPECIES_FULL[s]}</div>
+      <div class="end-sp-status ${alive ? 'alive' : 'dead'}">${alive ? Math.floor(pops[s]).toLocaleString() : 'EXTINCT'}</div>
+    </div>`;
+  }
+  $('end-species-list').innerHTML = spHtml;
+
+  endOverlay.classList.remove('hidden');
+}
+
+$('btn-end').addEventListener('click', showEndScreen);
+$('end-close').addEventListener('click', () => {
+  endOverlay.classList.add('hidden');
+  observationEnded = false;
+});
+$('end-new').addEventListener('click', () => {
+  endOverlay.classList.add('hidden');
+  app.classList.add('hidden');
+  setup.classList.remove('hidden');
+  observationEnded = false;
+  // Reset state
+  popHistory.length = 0;
+  Object.keys(ghostData).forEach(k => delete ghostData[k]);
+  knownExtinctions.clear();
+  shownEulogies.clear();
+  lastRenderedGen = -1;
+  portraitCanvases = [];
+  lastTraitValues = [-1, -1, -1, -1, -1];
+  lastJournalCount = 0;
+  lastEpochId = -1;
+  mapRenderer = null;
+  seedInput.value = generateSeed();
+  renderPreview();
+});
+
+// Auto-trigger end screen when all species extinct
+function checkAllExtinct(pops) {
+  if (pops.every(p => p === 0) && !observationEnded && sim.getGeneration() > 10) {
+    showEndScreen();
+  }
+}
 
 // ── Save/Load ──
 const btnSave = $('btn-save');

@@ -54,6 +54,7 @@
     <span id="gen-counter">Gen <span id="gen-num">0</span></span>
     <span id="season-label"></span>
     <div class="header-right">
+      <button class="btn btn-small" id="btn-end" title="End observation">End</button>
       <button class="btn btn-small" id="btn-save" title="Save observation">Save</button>
       <button class="btn btn-small" id="btn-lod" title="Simulation detail level">Full</button>
       <select id="theme-select" class="theme-select"></select>
@@ -94,6 +95,20 @@
       <div id="journal-feed"></div>
     </aside>
   </main>
+</div>
+
+<!-- END OBSERVATION OVERLAY -->
+<div id="end-overlay" class="hidden">
+  <div id="end-card">
+    <div id="end-title">Observation Complete</div>
+    <div id="end-seed"></div>
+    <div id="end-stats"></div>
+    <div id="end-species-list"></div>
+    <div id="end-actions">
+      <button class="btn" id="end-new">New Observation</button>
+      <button class="btn" id="end-close">Continue Watching</button>
+    </div>
+  </div>
 </div>
 
 <!-- EULOGY OVERLAY -->
