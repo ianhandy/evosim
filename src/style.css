@@ -292,6 +292,49 @@ html, body {
   background: rgba(221,193,101,0.08);
 }
 
+/* ── Eulogy Overlay ── */
+#eulogy-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 400;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+#eulogy-card {
+  background: var(--card);
+  border: 2px solid var(--red);
+  border-radius: 6px;
+  padding: 24px 28px;
+  max-width: 380px; width: 100%;
+  text-align: center;
+}
+#eulogy-icon { font-size: 36px; margin-bottom: 8px; opacity: 0.6; }
+#eulogy-species {
+  font-family: var(--sans);
+  font-size: 18px; font-weight: 700;
+  color: var(--gold-light);
+  margin-bottom: 2px;
+}
+#eulogy-dates {
+  font-size: 10px; color: var(--dim);
+  margin-bottom: 12px;
+}
+#eulogy-cause {
+  font-size: 11px; line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+#eulogy-stats {
+  font-size: 10px; color: var(--dim);
+  margin-bottom: 10px;
+}
+#eulogy-sparkline {
+  width: 100%; height: 40px;
+  margin-bottom: 14px;
+  border-radius: 3px;
+}
+#eulogy-dismiss { display: block; margin: 0 auto; }
+
 /* ── Tooltip Overlay ── */
 #tooltip-overlay {
   position: fixed; inset: 0;

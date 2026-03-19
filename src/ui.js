@@ -990,10 +990,76 @@ function checkDisclosures(gen, pops) {
   }
 }
 
+// ── Eulogy overlay ──
+const eulogyOverlay = $('eulogy-overlay');
+const CAUSE_NARRATIVES = {
+  predation: (name) => `Hunted to extinction. The predator populations were too much — ${name} couldn't sustain the losses.`,
+  disease: (name) => `A blight swept through the ${name} population. Too few remained to recover.`,
+  habitat_loss: (name) => `Their habitat eroded beneath them. As the terrain shifted, nowhere suitable remained for ${name}.`,
+  competition: (name) => `Outcompeted. Other species claimed the resources that ${name} depended on.`,
+  genetic_drift: (name) => `Too few, for too long. Genetic diversity collapsed. The end was quiet for ${name}.`,
+  unknown: (name) => `${name} faded. The exact cause remains unclear — perhaps a combination of pressures the ecosystem couldn't buffer.`,
+};
+
+function showEulogy(extData) {
+  const s = extData.species;
+  const name = SPECIES_FULL[s];
+  const cause = extData.cause || 'unknown';
+
+  $('eulogy-icon').textContent = '†';
+  $('eulogy-icon').style.color = SPECIES_COLORS[s];
+  $('eulogy-species').textContent = name;
+  $('eulogy-species').style.color = SPECIES_COLORS[s];
+  $('eulogy-dates').textContent = `Gen ${extData.gens_survived || '?'} generations survived · Peak: ${extData.peak_pop || '?'}`;
+  $('eulogy-cause').textContent = (CAUSE_NARRATIVES[cause] || CAUSE_NARRATIVES.unknown)(SPECIES_NAMES[s]);
+  $('eulogy-stats').textContent = `Last seen: tile (${(extData.last_tile || [0,0]).join(',')})`;
+
+  // Sparkline — population decline
+  const sparkCanvas = $('eulogy-sparkline');
+  const ctx = sparkCanvas.getContext('2d');
+  const sw = sparkCanvas.width;
+  const sh = sparkCanvas.height;
+  ctx.clearRect(0, 0, sw, sh);
+
+  const ghost = ghostData[s];
+  if (ghost && ghost.length > 1) {
+    let maxP = 1;
+    for (const g of ghost) if (g.pop > maxP) maxP = g.pop;
+
+    ctx.strokeStyle = hexToRgba(SPECIES_COLORS[s], 0.6);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < ghost.length; i++) {
+      const x = (i / (ghost.length - 1)) * sw;
+      const y = sh - (ghost[i].pop / maxP) * (sh - 4) - 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Pause sim and show overlay
+  const wasPlaying = playing;
+  if (playing) { sim.pause(); playing = false; btnPlay.textContent = '▶ Play'; btnPlay.classList.remove('active'); }
+  eulogyOverlay.classList.remove('hidden');
+
+  $('eulogy-dismiss').onclick = () => {
+    eulogyOverlay.classList.add('hidden');
+    if (wasPlaying) { playing = sim.togglePause(); btnPlay.textContent = '⏸ Pause'; btnPlay.classList.add('active'); }
+  };
+}
+
 // Check for speciation/extinction events from the queue
+let shownEulogies = new Set();
 function checkSimEvents() {
   const events = sim.getEventQueue();
   for (const evt of events) {
+    // Extinction eulogy
+    if (evt.type === 'extinction' && evt.data && !shownEulogies.has(evt.data.species)) {
+      shownEulogies.add(evt.data.species);
+      showEulogy(evt.data);
+    }
+
     if (evt.type === 'speciation' && !DISCLOSED.has('first-speciation')) {
       disclose('first-speciation',
         'Speciation Detected',
