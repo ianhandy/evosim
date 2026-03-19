@@ -83,6 +83,8 @@ export async function init(gridSize, seed, onProgress) {
   globalThis._js_trait_means = views.traitMeans;
   globalThis._js_trait_var = views.traitVar;
   globalThis._js_tile_flags = views.tileFlags;
+  globalThis._js_river_paths = views.riverPaths;
+  globalThis._js_river_meta = views.riverMeta;
 
   // Load and execute sim-core.py
   const simCode = await fetch('/sim-core.py').then(r => r.text());

@@ -309,6 +309,206 @@ def _step_migration():
                         traits[nr, nc, s, t] = (1-frac) * traits[nr, nc, s, t] + frac * traits[r, c, s, t]
 
 
+# ── RIVERS & TERRAIN DYNAMICS ─────────────────────────────────────────────────
+# Rivers are directed-path overlays on the elevation grid.
+# They spawn at high elevation, advance downhill, erode banks, form oxbows.
+# See evolution-simulation-research.md §12.
+
+RIVER_GEO_TICK = 200       # gens between river advance steps
+RIVER_SPAWN_PROB = 0.003   # per-gen chance of new river
+RIVER_EROSION = 0.008      # outer-bank erosion per geo tick
+RIVER_DEPOSIT = 0.004      # inner-bank deposition per geo tick
+RIVER_REROUTE_N = 3        # re-path every N geo ticks
+
+rivers = []       # list of river dicts
+oxbow_lakes = []   # list of {tiles: [(r,c),...], age: int}
+_next_river_id = 0
+
+
+def _spawn_river():
+    """Stochastically spawn a river at high elevation."""
+    global _next_river_id
+    if random.random() > RIVER_SPAWN_PROB:
+        return
+    # Find high-elevation tiles without rivers
+    candidates = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if elevations[r, c] > 0.7 and not (tile_flags[r, c] & 1):
+                candidates.append((r, c, float(elevations[r, c])))
+    if not candidates:
+        return
+    # Weight by elevation
+    candidates.sort(key=lambda x: -x[2])
+    r, c, _ = candidates[0]
+    river = {
+        'id': _next_river_id,
+        'path': [(r, c)],
+        'path_set': {(r, c)},
+        'age': 0,
+        'width': 1,
+        'active': True,
+        'stall_gens': 0,
+    }
+    _next_river_id += 1
+    tile_flags[r, c] |= 1  # has_river flag
+    rivers.append(river)
+    events_buffer.append({'gen': generation, 'type': 'river_spawn',
+        'text': f'Gen {generation}. A new river springs from the highlands at ({r},{c}).'})
+
+
+def _advance_river(river):
+    """Extend river one tile downhill."""
+    if not river['active']:
+        return
+    r, c = river['path'][-1]
+    best = None
+    best_elev = elevations[r, c]
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+        nr, nc = r+dr, c+dc
+        if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+            if (nr, nc) not in river['path_set']:
+                e = elevations[nr, nc]
+                if e < best_elev:
+                    best = (nr, nc)
+                    best_elev = e
+    if best is None:
+        river['stall_gens'] += 1
+        if river['stall_gens'] > 500:
+            _deactivate_river(river)
+        return
+    river['stall_gens'] = 0
+    nr, nc = best
+    river['path'].append((nr, nc))
+    river['path_set'].add((nr, nc))
+    tile_flags[nr, nc] |= 1
+    # Reached coast?
+    if elevations[nr, nc] < 0.15:
+        river['active'] = False  # complete
+
+
+def _deactivate_river(river):
+    """Dry up a river."""
+    river['active'] = False
+    for r, c in river['path']:
+        # Only clear flag if no other active river uses this tile
+        other = any(rv['active'] and (r,c) in rv['path_set'] for rv in rivers if rv['id'] != river['id'])
+        if not other:
+            tile_flags[r, c] &= ~1
+
+
+def _river_erode_deposit():
+    """Lateral erosion-deposition at river bends. Creates emergent meandering."""
+    for river in rivers:
+        if not river['active'] or len(river['path']) < 3:
+            continue
+        path = river['path']
+        for i in range(1, len(path) - 1):
+            pr, pc = path[i-1]
+            cr, cc = path[i]
+            nr, nc = path[i+1]
+            # Flow direction vectors
+            dr_in, dc_in = cr - pr, cc - pc
+            dr_out, dc_out = nr - cr, nc - cc
+            # Detect bend (direction change)
+            if (dr_in, dc_in) == (dr_out, dc_out):
+                continue  # straight segment
+            # Outer bank: perpendicular to bend, on the outside
+            # Simple: the tile opposite to the bend direction
+            outer_r = cr + (dr_in + dr_out)
+            outer_c = cc + (dc_in + dc_out)
+            inner_r = cr - (dr_in + dr_out)
+            inner_c = cc - (dc_in + dc_out)
+            # Erode outer bank
+            if 0 <= outer_r < GRID_SIZE and 0 <= outer_c < GRID_SIZE:
+                elevations[outer_r, outer_c] = max(0, elevations[outer_r, outer_c] - RIVER_EROSION)
+            # Deposit inner bank
+            if 0 <= inner_r < GRID_SIZE and 0 <= inner_c < GRID_SIZE:
+                elevations[inner_r, inner_c] = min(1, elevations[inner_r, inner_c] + RIVER_DEPOSIT)
+
+
+def _check_oxbow(river):
+    """Detect meander cutoff — when path loops close."""
+    path = river['path']
+    if len(path) < 6:
+        return
+    for i in range(len(path)):
+        for j in range(i + 4, len(path)):
+            ri, ci = path[i]
+            rj, cj = path[j]
+            if abs(ri - rj) + abs(ci - cj) == 1:
+                # Loop detected — cut it
+                loop = path[i+1:j]
+                river['path'] = path[:i+1] + path[j:]
+                river['path_set'] = set(river['path'])
+                # Clear river flags on loop tiles
+                for lr, lc in loop:
+                    tile_flags[lr, lc] &= ~1
+                # Create oxbow lake
+                if loop:
+                    oxbow_lakes.append({'tiles': loop, 'age': 0})
+                    events_buffer.append({'gen': generation, 'type': 'oxbow',
+                        'text': f'Gen {generation}. The river bends too far. An oxbow lake forms — isolation follows.'})
+                return  # one cutoff per step
+
+
+def _step_rivers():
+    """Master river update — called on geological ticks."""
+    geo_tick = generation // RIVER_GEO_TICK
+    if generation % RIVER_GEO_TICK != 0:
+        return
+
+    for river in rivers:
+        if river['active']:
+            _advance_river(river)
+            river['age'] += 1
+            river['width'] = 1 + river['age'] // 5
+
+    _river_erode_deposit()
+
+    if geo_tick % RIVER_REROUTE_N == 0:
+        for river in rivers:
+            if river['active']:
+                _check_oxbow(river)
+
+    # Age oxbow lakes
+    for lake in oxbow_lakes:
+        lake['age'] += 1
+
+
+def _sync_rivers_to_buffer():
+    """Write river path data to shared buffer for JS rendering."""
+    from js import _js_river_paths, _js_river_meta
+
+    # River paths: flatten all paths with -1 sentinel between rivers
+    path_data = []
+    for river in rivers:
+        for r, c in river['path']:
+            path_data.append(r)
+            path_data.append(c)
+        path_data.append(-1)  # sentinel: end of this river
+        path_data.append(-1)
+
+    # Pad or truncate to buffer size
+    max_vals = 512 * 2  # MAX_RIVER_POINTS * 2
+    while len(path_data) < max_vals:
+        path_data.append(-1)
+    path_data = path_data[:max_vals]
+
+    from pyodide.ffi import to_js
+    _js_river_paths.set(to_js(np.array(path_data, dtype=np.int16)))
+
+    # River meta: [id, age, width, active] per river
+    meta_data = []
+    max_rivers = 20
+    for river in rivers[:max_rivers]:
+        meta_data.extend([river['id'], river['age'], river['width'], 1.0 if river['active'] else 0.0])
+    while len(meta_data) < max_rivers * 4:
+        meta_data.extend([-1, 0, 0, 0])
+
+    _js_river_meta.set(to_js(np.array(meta_data[:max_rivers * 4], dtype=np.float32)))
+
+
 # ── BUFFER SYNC ───────────────────────────────────────────────────────────────
 
 def _sync_to_buffer():
@@ -371,7 +571,13 @@ def step_simulation(n=1):
             _step_migration()
         elif generation % 5 == 0:
             _step_migration()
+
+        # Rivers (geological timescale)
+        _spawn_river()
+        _step_rivers()
+
     _sync_to_buffer()
+    _sync_rivers_to_buffer()
 
 
 def flush_events():

@@ -372,6 +372,45 @@ function renderMap(views) {
     }
   }
 
+  // Rivers
+  const rp = views.riverPaths;
+  const rm = views.riverMeta;
+  const maxRivers = rm.length / 4;
+  let rpIdx = 0;
+
+  for (let ri = 0; ri < maxRivers; ri++) {
+    const riverId = rm[ri * 4];
+    if (riverId < 0) break;
+    const age = rm[ri * 4 + 1];
+    const width = rm[ri * 4 + 2];
+    const active = rm[ri * 4 + 3] > 0;
+
+    ctx.strokeStyle = active ? 'rgba(30, 90, 160, 0.7)' : 'rgba(30, 70, 120, 0.3)';
+    ctx.lineWidth = Math.max(1, width * 0.8 * camZoom);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+
+    let started = false;
+    while (rpIdx < rp.length / 2) {
+      const pr = rp[rpIdx * 2];
+      const pc = rp[rpIdx * 2 + 1];
+      rpIdx++;
+      if (pr < 0) break; // sentinel — end of this river's path
+
+      const elev = views.elevations[pr * gs + pc];
+      const ix = (pc - pr) * (tileW * 0.5);
+      const iy = (pc + pr) * (tileH * 0.5);
+      const iz = elev * heightScale;
+      const sx = offsetX + ix;
+      const sy = offsetY + iy - iz;
+
+      if (!started) { ctx.moveTo(sx, sy); started = true; }
+      else ctx.lineTo(sx, sy);
+    }
+    if (started) ctx.stroke();
+  }
+
   // Vignette
   const grad = ctx.createRadialGradient(w/2, h/2, Math.min(w,h)*0.35, w/2, h/2, Math.min(w,h)*0.7);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
