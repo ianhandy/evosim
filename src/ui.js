@@ -6,6 +6,7 @@
 import * as sim from './sim.js';
 import { GLOBAL } from './layout.js';
 import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
+import { drawPortrait } from './creatures.js';
 
 // ── DOM refs ──
 const $ = id => document.getElementById(id);
@@ -110,7 +111,7 @@ function resizeCanvases() {
   // Pop chart
   const chartRect = popChart.parentElement.getBoundingClientRect();
   popChart.width = chartRect.width * dpr;
-  popChart.height = 120 * dpr;
+  popChart.height = 160 * dpr;
 }
 
 window.addEventListener('resize', resizeCanvases);
@@ -300,32 +301,69 @@ function renderPopChart() {
   const h = popChart.height / dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  ctx.fillStyle = '#2a1500';
+  const style = getComputedStyle(document.documentElement);
+  ctx.fillStyle = style.getPropertyValue('--card').trim() || '#2a1500';
   ctx.fillRect(0, 0, w, h);
 
-  // Find max pop for scaling
-  let maxPop = 1;
+  // Find max pop for scaling (with 10% headroom)
+  let maxPop = 100;
   for (const entry of popHistory) {
     for (const p of entry.pops) {
       if (p > maxPop) maxPop = p;
     }
   }
+  maxPop *= 1.1;
 
-  const pad = { l: 4, r: 4, t: 4, b: 4 };
+  const pad = { l: 30, r: 6, t: 8, b: 16 };
   const cw = w - pad.l - pad.r;
   const ch = h - pad.t - pad.b;
 
+  // Y-axis gridlines
+  const gridColor = style.getPropertyValue('--border').trim() || '#3d2200';
+  const dimColor = style.getPropertyValue('--dim').trim() || '#7a5a2a';
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 0.5;
+  ctx.font = '8px monospace';
+  ctx.fillStyle = dimColor;
+  ctx.textAlign = 'right';
+  const ySteps = 4;
+  for (let i = 0; i <= ySteps; i++) {
+    const y = pad.t + (i / ySteps) * ch;
+    const val = Math.round(maxPop * (1 - i / ySteps));
+    ctx.beginPath();
+    ctx.moveTo(pad.l, y);
+    ctx.lineTo(pad.l + cw, y);
+    ctx.stroke();
+    ctx.fillText(val >= 1000 ? (val / 1000).toFixed(1) + 'k' : String(val), pad.l - 3, y + 3);
+  }
+
+  // Generation range label
+  if (popHistory.length > 1) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = dimColor;
+    const firstGen = Math.floor(popHistory[0].gen);
+    const lastGen = Math.floor(popHistory[popHistory.length - 1].gen);
+    ctx.fillText(`Gen ${firstGen}`, pad.l + 15, h - 3);
+    ctx.fillText(`${lastGen}`, pad.l + cw - 10, h - 3);
+  }
+
+  // Species lines
   for (let s = 0; s < 5; s++) {
     ctx.strokeStyle = SPECIES_COLORS[s];
     ctx.lineWidth = 1.5;
-    ctx.globalAlpha = 0.8;
+    ctx.globalAlpha = 0.85;
     ctx.beginPath();
     for (let i = 0; i < popHistory.length; i++) {
-      const x = pad.l + (i / (MAX_HISTORY - 1)) * cw;
+      const x = pad.l + (i / Math.max(1, popHistory.length - 1)) * cw;
       const y = pad.t + ch - (popHistory[i].pops[s] / maxPop) * ch;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
+    ctx.stroke();
+
+    // Glow effect for line visibility
+    ctx.strokeStyle = hexToRgba(SPECIES_COLORS[s], 0.15);
+    ctx.lineWidth = 4;
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
@@ -334,25 +372,85 @@ function renderPopChart() {
 // ── Species cards ──
 const speciesCards = $('species-cards');
 const SPECIES_TRAITS = ['Crest Brightness', 'Hunting Range', 'Burrowing Depth', 'Shell Thickness', 'Glow Intensity'];
+const SPECIES_FULL = ['Velothrix aurantis', 'Kelp Leviathan', 'Reed Crawler', 'Tidal Crab', 'Bioluminescent Worm'];
+let portraitCanvases = []; // cached canvas elements
+let lastTraitValues = [-1, -1, -1, -1, -1]; // redraw portraits only when trait changes
 
 function renderSpeciesCards(totalPops) {
   const views = sim.getViews();
   if (!views) return;
+  const gs = sim.getLayout().gridSize;
+  const G2 = gs * gs;
+  const T = sim.getLayout().traitsPerSpecies;
 
-  let html = '';
+  // Compute mean species-specific trait across all tiles (weighted by pop)
+  const meanTraits = [];
+  for (let s = 0; s < 5; s++) {
+    let sumTrait = 0, sumPop = 0;
+    for (let i = 0; i < G2; i++) {
+      const p = views.populations[i * 5 + s];
+      if (p > 0) {
+        sumTrait += views.traitMeans[(i * 5 + s) * T + 5] * p; // T_SPECIFIC = index 5
+        sumPop += p;
+      }
+    }
+    meanTraits.push(sumPop > 0 ? sumTrait / sumPop : 0.5);
+  }
+
+  // Only rebuild DOM if cards don't exist yet
+  if (portraitCanvases.length === 0) {
+    let html = '';
+    for (let s = 0; s < 5; s++) {
+      html += `<div class="species-card" id="sp-card-${s}" style="border-left-color:${SPECIES_COLORS[s]}">
+        <div class="sp-row">
+          <canvas class="sp-portrait" id="sp-portrait-${s}" width="80" height="80"></canvas>
+          <div class="sp-info">
+            <div class="sp-name">${SPECIES_FULL[s]}</div>
+            <div class="sp-pop" id="sp-pop-${s}">0</div>
+            <div class="sp-trait-row">
+              <span class="sp-trait-label">${SPECIES_TRAITS[s]}</span>
+              <div class="sp-trait-bar"><div class="sp-trait-fill" id="sp-trait-${s}" style="width:50%;background:${SPECIES_COLORS[s]}"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+    speciesCards.innerHTML = html;
+    portraitCanvases = [];
+    for (let s = 0; s < 5; s++) {
+      const canvas = $(`sp-portrait-${s}`);
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = 80 * dpr;
+      canvas.height = 80 * dpr;
+      canvas.style.width = '40px';
+      canvas.style.height = '40px';
+      portraitCanvases.push(canvas);
+    }
+  }
+
+  // Update values (fast — no DOM rebuild)
   for (let s = 0; s < 5; s++) {
     const pop = Math.floor(totalPops[s]);
     const extinct = pop === 0;
+    const card = $(`sp-card-${s}`);
+    const popEl = $(`sp-pop-${s}`);
+    const traitEl = $(`sp-trait-${s}`);
 
-    html += `<div class="species-card${extinct ? ' extinct' : ''}" style="border-left-color:${SPECIES_COLORS[s]}">
-      <div class="sp-header">
-        <span class="sp-dot" style="background:${SPECIES_COLORS[s]}"></span>
-        <span class="sp-name">${SPECIES_NAMES[s]}</span>
-        <span class="sp-pop">${extinct ? 'EXTINCT' : pop.toLocaleString()}</span>
-      </div>
-    </div>`;
+    card.classList.toggle('extinct', extinct);
+    popEl.textContent = extinct ? 'EXTINCT' : pop.toLocaleString();
+    traitEl.style.width = (meanTraits[s] * 100) + '%';
+
+    // Redraw portrait only if trait changed significantly
+    const traitDelta = Math.abs(meanTraits[s] - lastTraitValues[s]);
+    if (traitDelta > 0.01 || lastTraitValues[s] < 0) {
+      lastTraitValues[s] = meanTraits[s];
+      const canvas = portraitCanvases[s];
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawPortrait(ctx, s, meanTraits[s], 40, SPECIES_COLORS[s]);
+    }
   }
-  speciesCards.innerHTML = html;
 }
 
 // ── Theme selector ──

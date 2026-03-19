@@ -200,15 +200,20 @@ html, body {
 }
 
 #pop-chart {
-  width: 100%; height: 120px;
+  width: 100%; height: 160px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 4px;
 }
+.chart-label {
+  font-size: 9px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 1px;
+  padding: 4px 0 2px;
+}
 
 /* ── Species Cards ── */
 .species-card {
-  padding: 6px 10px;
+  padding: 6px 8px;
   border-left: 3px solid;
   background: var(--card);
   border-radius: 0 4px 4px 0;
@@ -216,20 +221,38 @@ html, body {
   transition: opacity 0.3s;
 }
 .species-card.extinct { opacity: 0.35; }
-.sp-header {
-  display: flex; align-items: center; gap: 6px;
+.sp-row {
+  display: flex; align-items: center; gap: 8px;
 }
-.sp-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%; flex-shrink: 0;
+.sp-portrait {
+  flex-shrink: 0;
+  border-radius: 4px;
 }
+.sp-info { flex: 1; min-width: 0; }
 .sp-name {
-  font-size: 11px; font-weight: 600;
-  color: var(--gold-light); flex: 1;
+  font-size: 10px; font-weight: 600;
+  color: var(--gold-light);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sp-pop {
   font-size: 11px; color: var(--dim);
   font-variant-numeric: tabular-nums;
+}
+.sp-trait-row {
+  display: flex; align-items: center; gap: 4px; margin-top: 2px;
+}
+.sp-trait-label {
+  font-size: 8px; color: var(--dim);
+  white-space: nowrap; min-width: 50px;
+}
+.sp-trait-bar {
+  flex: 1; height: 3px;
+  background: var(--border); border-radius: 2px;
+  overflow: hidden;
+}
+.sp-trait-fill {
+  height: 100%; border-radius: 2px;
+  transition: width 0.3s;
 }
 .species-card.extinct .sp-name { text-decoration: line-through; }
 .species-card.extinct .sp-pop { color: var(--red); font-size: 9px; }
