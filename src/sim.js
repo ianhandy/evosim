@@ -34,8 +34,11 @@ export async function init(gridSize, seed, onProgress) {
   onProgress?.('pyodide', 10);
   pyodide = await loadPyodide();
 
-  onProgress?.('numpy', 40);
+  onProgress?.('numpy', 30);
   await pyodide.loadPackage('numpy');
+
+  onProgress?.('scipy', 50);
+  await pyodide.loadPackage('scipy');
 
   onProgress?.('buffer', 60);
 

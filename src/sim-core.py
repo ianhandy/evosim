@@ -109,44 +109,51 @@ COMPETITION = [
 
 # ── TERRAIN ───────────────────────────────────────────────────────────────────
 
-def _value_noise(size, seed_val, octaves=4, persistence=0.5):
+def _smooth_noise(size, seed_val, scale=1.0):
+    """
+    Generate smooth 2D noise using scipy's gaussian filter on random values.
+    This produces natural-looking continuous terrain, not blocky grids.
+    """
+    from scipy.ndimage import gaussian_filter
     rng = np.random.RandomState(seed_val)
+    raw = rng.rand(size, size).astype(np.float32)
+    # Sigma controls feature size — larger = smoother, bigger features
+    sigma = size * 0.08 * scale
+    smooth = gaussian_filter(raw, sigma=sigma, mode='wrap')
+    # Normalize to 0-1
+    lo, hi = smooth.min(), smooth.max()
+    if hi > lo:
+        smooth = (smooth - lo) / (hi - lo)
+    return smooth
+
+
+def _fbm_noise(size, seed_val, octaves=6, lacunarity=2.0, gain=0.5):
+    """
+    Fractal Brownian Motion — layered smooth noise at multiple scales.
+    Produces realistic terrain with both large features and fine detail.
+    """
     result = np.zeros((size, size), dtype=np.float32)
-    amp, total = 1.0, 0.0
+    amp = 1.0
+    total = 0.0
     for o in range(octaves):
-        freq = 2 ** o + 1
-        grid = rng.rand(freq, freq).astype(np.float32)
-        xs = np.linspace(0, freq - 1, size)
-        ri = np.clip(xs.astype(int), 0, freq - 2)
-        rf = xs - ri
-        interp = np.zeros((size, size), dtype=np.float32)
-        for i in range(size):
-            for j in range(size):
-                x0, y0 = int(ri[i]), int(ri[j])
-                xf, yf = rf[i], rf[j]
-                interp[i, j] = (
-                    grid[x0, y0] * (1-xf) * (1-yf) +
-                    grid[x0+1, y0] * xf * (1-yf) +
-                    grid[x0, y0+1] * (1-xf) * yf +
-                    grid[x0+1, y0+1] * xf * yf
-                )
-        result += interp * amp
+        scale = 1.0 / (lacunarity ** o)
+        layer = _smooth_noise(size, seed_val + o * 1337, scale=scale)
+        result += layer * amp
         total += amp
-        amp *= persistence
+        amp *= gain
     return result / total
 
 
 def _generate_terrain(seed_str):
     """
-    Generate archipelago terrain — multiple islands with varied features.
-    Uses multi-center radial falloff + noise for diverse island shapes.
+    Generate realistic archipelago terrain.
 
-    The algorithm:
-    1. Place N island centers randomly (weighted toward spread)
-    2. Each center gets a radius, peak height, and shape distortion
-    3. For each tile, compute influence from all centers (inverse distance)
-    4. Overlay multi-octave noise for surface detail
-    5. Apply erosion ridges for mountain features on large islands
+    Algorithm:
+    1. FBM noise for base continent shape
+    2. Multiple island seeds with smooth radial falloff
+    3. Multiply noise × island mask for natural coastlines
+    4. Ridge features on high terrain
+    5. Coastal shelf (gradual underwater slope)
     """
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
@@ -154,75 +161,68 @@ def _generate_terrain(seed_str):
     rng = np.random.RandomState(seed_val)
 
     gs = GRID_SIZE
-    result = np.zeros((gs, gs), dtype=np.float32)
 
-    # Number of islands scales with grid size
-    num_islands = max(2, gs // 8 + rng.randint(0, 3))
-
-    # Generate island centers with minimum spacing
+    # ── Step 1: Island mask — defines where land CAN exist ──
+    # Place island centers with minimum spacing
+    num_islands = max(2, gs // 10 + rng.randint(1, 4))
     centers = []
-    for _ in range(num_islands * 5):  # try many, keep spaced ones
-        cr = rng.uniform(gs * 0.1, gs * 0.9)
-        cc = rng.uniform(gs * 0.1, gs * 0.9)
-        # Check spacing
-        too_close = False
-        for (er, ec, _, _, _) in centers:
-            if math.sqrt((cr - er)**2 + (cc - ec)**2) < gs * 0.12:
-                too_close = True
-                break
+    for attempt in range(num_islands * 10):
+        cr = rng.uniform(gs * 0.08, gs * 0.92)
+        cc = rng.uniform(gs * 0.08, gs * 0.92)
+        too_close = any(math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.15
+                        for er, ec, _, _ in centers)
         if not too_close:
-            radius = rng.uniform(gs * 0.06, gs * 0.22)
-            peak = rng.uniform(0.5, 1.0)
-            # Shape distortion — makes islands non-circular
-            distort = rng.uniform(0.5, 1.5)
-            centers.append((cr, cc, radius, peak, distort))
+            radius = rng.uniform(gs * 0.08, gs * 0.28)
+            peak = rng.uniform(0.6, 1.0)
+            centers.append((cr, cc, radius, peak))
         if len(centers) >= num_islands:
             break
 
     if not centers:
-        centers = [(gs/2, gs/2, gs*0.2, 0.8, 1.0)]
+        centers = [(gs * 0.5, gs * 0.5, gs * 0.25, 0.9)]
 
-    # Build elevation from island influences
+    # Build smooth island mask
+    mask = np.zeros((gs, gs), dtype=np.float32)
     for r in range(gs):
         for c in range(gs):
-            max_influence = 0.0
-            for cr_c, cc_c, radius, peak, distort in centers:
-                # Elliptical distance with distortion
-                dr = (r - cr_c) * distort
-                dc = (c - cc_c) / max(0.5, distort)
-                dist = math.sqrt(dr**2 + dc**2)
-                # Smooth falloff
+            for cr_c, cc_c, radius, peak in centers:
+                dist = math.sqrt((r - cr_c)**2 + (c - cc_c)**2)
                 if dist < radius:
-                    # Cosine falloff for natural island shape
                     t = dist / radius
-                    influence = peak * (0.5 + 0.5 * math.cos(t * math.pi))
-                    max_influence = max(max_influence, influence)
-            result[r, c] = max_influence
+                    # Smooth cubic falloff: (1 - t²)² gives natural island shape
+                    falloff = (1 - t * t) ** 2
+                    mask[r, c] = max(mask[r, c], peak * falloff)
 
-    # Overlay noise for surface detail and coastline irregularity
-    noise = _value_noise(gs, seed_val, octaves=5, persistence=0.55)
-    result = result * 0.65 + noise * 0.35
+    # ── Step 2: FBM noise for terrain detail ──
+    terrain_noise = _fbm_noise(gs, seed_val, octaves=6)
 
-    # Ridge features — sharp elevation spines on high terrain
-    ridge_noise = _value_noise(gs, seed_val + 7777, octaves=3, persistence=0.4)
+    # ── Step 3: Combine — multiply mask by noise ──
+    # This gives us noisy coastlines but clean ocean
+    result = mask * 0.55 + mask * terrain_noise * 0.45
+
+    # ── Step 4: Coastal shelf — gradual underwater slope around islands ──
+    # Add a low-level noise floor near islands for shallow water
+    shelf_noise = _smooth_noise(gs, seed_val + 5555, scale=0.5)
     for r in range(gs):
         for c in range(gs):
-            if result[r, c] > 0.4:
-                # Ridge: absolute value of noise creates sharp peaks
-                ridge = abs(ridge_noise[r, c] - 0.5) * 2
-                result[r, c] += ridge * 0.2 * (result[r, c] - 0.3)
+            if mask[r, c] > 0.05 and result[r, c] < 0.2:
+                # Near an island but underwater — add shelf
+                result[r, c] = max(result[r, c], 0.08 + shelf_noise[r, c] * 0.12)
 
-    # Normalize to 0-1
+    # ── Step 5: Ridge features on high terrain ──
+    ridge = _fbm_noise(gs, seed_val + 9999, octaves=3, gain=0.4)
+    for r in range(gs):
+        for c in range(gs):
+            if result[r, c] > 0.45:
+                spine = abs(ridge[r, c] - 0.5) * 2  # creates sharp ridges
+                result[r, c] += spine * 0.15 * (result[r, c] - 0.35)
+
+    # ── Normalize ──
     lo, hi = result.min(), result.max()
     if hi > lo:
         result = (result - lo) / (hi - lo)
 
-    # Push water lower — more ocean between islands
-    result = np.clip(result * 1.2 - 0.15, 0, 1)
-
     elevations[:] = result
-
-    # Assign biomes
     _assign_biomes()
 
     # Initialize vegetation

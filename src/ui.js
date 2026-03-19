@@ -90,44 +90,52 @@ function renderPreview() {
   const seed = seedInput.value || 'ABC123';
   const seedVal = seed.split('').reduce((a, c, i) => a + c.charCodeAt(0) * (i + 1), 0);
 
-  // Seeded pseudo-random
-  function seededRand(s) {
-    let x = Math.sin(s) * 43758.5453;
-    return x - Math.floor(x);
+  // Seeded hash for deterministic pseudo-random
+  function hash(x, y, s) {
+    let n = Math.sin(x * 127.1 + y * 311.7 + s) * 43758.5453;
+    return n - Math.floor(n);
   }
 
-  function noise(x, y) {
-    return seededRand(x * 127.1 + y * 311.7 + seedVal);
+  // Smooth noise via interpolated hash grid (preview-quality)
+  function smoothNoise(x, y, s) {
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const fx = x - ix, fy = y - iy;
+    // Smoothstep
+    const sx = fx * fx * (3 - 2 * fx);
+    const sy = fy * fy * (3 - 2 * fy);
+    const a = hash(ix, iy, s), b = hash(ix+1, iy, s);
+    const c = hash(ix, iy+1, s), d = hash(ix+1, iy+1, s);
+    return a + sx * (b - a) + sy * (c - a) + sx * sy * (a - b - c + d);
   }
 
-  function fbm(x, y) {
-    let v = 0, amp = 1, tot = 0;
-    for (let o = 0; o < 5; o++) {
-      v += noise(x * (o + 1) * 0.7, y * (o + 1) * 0.7) * amp;
+  function fbm(x, y, s, oct = 6) {
+    let v = 0, amp = 1, tot = 0, freq = 1;
+    for (let o = 0; o < oct; o++) {
+      v += smoothNoise(x * freq, y * freq, s + o * 1337) * amp;
       tot += amp;
+      freq *= 2;
       amp *= 0.5;
     }
     return v / tot;
   }
 
-  // Generate island centers (same algorithm as Python)
-  const numIslands = Math.max(2, Math.floor(gs / 8) + Math.floor(seededRand(seedVal * 3) * 3));
+  // Island centers
+  const numIslands = Math.max(2, Math.floor(gs / 10) + 1 + Math.floor(hash(0, 0, seedVal * 3) * 3));
   const centers = [];
-  for (let attempt = 0; attempt < numIslands * 5 && centers.length < numIslands; attempt++) {
-    const cr = 0.1 * gs + seededRand(seedVal + attempt * 13) * gs * 0.8;
-    const cc = 0.1 * gs + seededRand(seedVal + attempt * 17 + 999) * gs * 0.8;
+  for (let attempt = 0; attempt < numIslands * 10 && centers.length < numIslands; attempt++) {
+    const cr = 0.08 * gs + hash(attempt, 1, seedVal + 13) * gs * 0.84;
+    const cc = 0.08 * gs + hash(attempt, 2, seedVal + 17) * gs * 0.84;
     let ok = true;
     for (const [er, ec] of centers) {
-      if (Math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.12) { ok = false; break; }
+      if (Math.sqrt((cr-er)**2 + (cc-ec)**2) < gs * 0.15) { ok = false; break; }
     }
     if (ok) {
-      const radius = gs * 0.06 + seededRand(seedVal + attempt * 7) * gs * 0.16;
-      const peak = 0.5 + seededRand(seedVal + attempt * 11) * 0.5;
-      const distort = 0.5 + seededRand(seedVal + attempt * 19) * 1.0;
-      centers.push([cr, cc, radius, peak, distort]);
+      const radius = gs * 0.08 + hash(attempt, 3, seedVal + 7) * gs * 0.20;
+      const peak = 0.6 + hash(attempt, 4, seedVal + 11) * 0.4;
+      centers.push([cr, cc, radius, peak]);
     }
   }
-  if (centers.length === 0) centers.push([gs/2, gs/2, gs*0.2, 0.8, 1.0]);
+  if (centers.length === 0) centers.push([gs/2, gs/2, gs*0.25, 0.9]);
 
   const tileW = (cw / gs) * 0.85;
   const tileH = tileW * 0.5;
@@ -138,21 +146,21 @@ function renderPreview() {
 
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
-      // Island influence
-      let maxInf = 0;
-      for (const [cr, cc, radius, peak, distort] of centers) {
-        const dr = (r - cr) * distort;
-        const dc = (c - cc) / Math.max(0.5, distort);
-        const dist = Math.sqrt(dr*dr + dc*dc);
+      // Island mask
+      let mask = 0;
+      for (const [cr, cc, radius, peak] of centers) {
+        const dist = Math.sqrt((r-cr)**2 + (c-cc)**2);
         if (dist < radius) {
           const t = dist / radius;
-          const inf = peak * (0.5 + 0.5 * Math.cos(t * Math.PI));
-          if (inf > maxInf) maxInf = inf;
+          const falloff = (1 - t * t) ** 2;
+          mask = Math.max(mask, peak * falloff);
         }
       }
 
-      let e = maxInf * 0.65 + fbm(r / gs * 3, c / gs * 3) * 0.35;
-      e = Math.max(0, Math.min(1, e * 1.2 - 0.15));
+      // Combine mask with FBM noise
+      const n = fbm(r / gs * 4, c / gs * 4, seedVal);
+      let e = mask * 0.55 + mask * n * 0.45;
+      e = Math.max(0, Math.min(1, e));
 
       let biome;
       if (e < 0.15) biome = 0;
@@ -497,25 +505,12 @@ function renderMap(views) {
       const flrBottom = { x: flr.x,               y: flr.y + tileH * 0.5 };
       const flrLeft   = { x: flr.x - tileW * 0.5, y: flr.y };
 
-      // ── BACK-LEFT FACE (NW-facing, darkest — usually occluded) ──
-      ctx.fillStyle = `rgb(${tr * shade * 0.25 | 0},${tg * shade * 0.25 | 0},${tb * shade * 0.25 | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(top.x, top.y);
-      ctx.lineTo(left.x, left.y);
-      ctx.lineTo(flrLeft.x, flrLeft.y);
-      ctx.lineTo(flrTop.x, flrTop.y);
-      ctx.fill();
+      // Only draw viewer-facing side faces (SE + SW).
+      // Back faces (NE + NW) are only needed on grid edges where no tile
+      // behind can occlude them. Drawing all 4 on every tile creates
+      // see-through artifacts because back faces peek through gaps.
 
-      // ── BACK-RIGHT FACE (NE-facing, dark — usually occluded) ──
-      ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(top.x, top.y);
-      ctx.lineTo(right.x, right.y);
-      ctx.lineTo(flrRight.x, flrRight.y);
-      ctx.lineTo(flrTop.x, flrTop.y);
-      ctx.fill();
-
-      // ── FRONT-RIGHT FACE (SE-facing, lighter) ──
+      // ── FRONT-RIGHT FACE (SE-facing) ──
       ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
       ctx.beginPath();
       ctx.moveTo(right.x, right.y);
@@ -524,7 +519,7 @@ function renderMap(views) {
       ctx.lineTo(flrRight.x, flrRight.y);
       ctx.fill();
 
-      // ── FRONT-LEFT FACE (SW-facing, medium) ──
+      // ── FRONT-LEFT FACE (SW-facing) ──
       ctx.fillStyle = `rgb(${tr * shade * 0.35 | 0},${tg * shade * 0.35 | 0},${tb * shade * 0.35 | 0})`;
       ctx.beginPath();
       ctx.moveTo(left.x, left.y);
@@ -532,6 +527,28 @@ function renderMap(views) {
       ctx.lineTo(flrBottom.x, flrBottom.y);
       ctx.lineTo(flrLeft.x, flrLeft.y);
       ctx.fill();
+
+      // ── BACK FACES — only on grid edges ──
+      if (r === 0) {
+        // Back-right (NE) — visible on top edge
+        ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(flrRight.x, flrRight.y);
+        ctx.lineTo(flrTop.x, flrTop.y);
+        ctx.fill();
+      }
+      if (c === 0) {
+        // Back-left (NW) — visible on left edge
+        ctx.fillStyle = `rgb(${tr * shade * 0.25 | 0},${tg * shade * 0.25 | 0},${tb * shade * 0.25 | 0})`;
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.lineTo(flrLeft.x, flrLeft.y);
+        ctx.lineTo(flrTop.x, flrTop.y);
+        ctx.fill();
+      }
 
       // ── TOP FACE (terrain surface — NOT water) ──
       if (!isWater) {
