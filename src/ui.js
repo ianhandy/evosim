@@ -22,6 +22,7 @@ const seasonLabel = $('season-label');
 const btnPlay = $('btn-play');
 const mapCanvas = $('map-canvas');
 const popChart = $('pop-chart');
+const pentagonChart = $('pentagon-chart');
 
 let gridSize = 12;
 let playing = false;
@@ -41,6 +42,10 @@ let dragLastY = 0;
 // Population history for chart
 const popHistory = [];
 const MAX_HISTORY = 300;
+
+// Ghost data: extinct species' last N data points, preserved after death
+const ghostData = {}; // species index → [{gen, pop}]
+let knownExtinctions = new Set();
 
 // ── Seed utils ──
 function generateSeed() {
@@ -121,6 +126,11 @@ function resizeCanvases() {
 
   // Pop chart
   const chartRect = popChart.parentElement.getBoundingClientRect();
+  // Pentagon chart
+  const pentRect = pentagonChart.parentElement.getBoundingClientRect();
+  pentagonChart.width = pentRect.width * dpr;
+  pentagonChart.height = 140 * dpr;
+
   popChart.width = chartRect.width * dpr;
   popChart.height = 160 * dpr;
 }
@@ -236,6 +246,15 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
+      // Detect new extinctions → freeze ghost data
+      for (let s = 0; s < 5; s++) {
+        if (pops[s] === 0 && !knownExtinctions.has(s)) {
+          // Species just went extinct — capture its historical data
+          knownExtinctions.add(s);
+          ghostData[s] = popHistory.filter(h => h.pops[s] > 0).map(h => ({ gen: h.gen, pop: h.pops[s] }));
+        }
+      }
+
       // Epoch display
       updateEpoch(views.globals[GLOBAL.EPOCH_ID]);
 
@@ -246,7 +265,8 @@ function startRenderLoop() {
       // Sim events (extinctions, speciation)
       checkSimEvents();
 
-      // Render population chart + species cards + journal
+      // Render all panels
+      renderPentagon(pops);
       renderPopChart();
       renderSpeciesCards(pops);
       renderJournal();
@@ -425,6 +445,97 @@ function renderMap(views) {
   ctx.fillRect(0, 0, w, h);
 }
 
+// ── Pentagon / Radar diagram ──
+function renderPentagon(pops) {
+  const dpr = window.devicePixelRatio || 1;
+  const ctx = pentagonChart.getContext('2d');
+  const w = pentagonChart.width / dpr;
+  const h = pentagonChart.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const style = getComputedStyle(document.documentElement);
+  ctx.fillStyle = style.getPropertyValue('--card').trim() || '#2a1500';
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+  const maxR = Math.min(cx, cy) - 20;
+
+  // Find max for normalization
+  let maxPop = 1;
+  for (let s = 0; s < 5; s++) if (pops[s] > maxPop) maxPop = pops[s];
+
+  const gridColor = style.getPropertyValue('--border').trim() || '#3d2200';
+  const dimColor = style.getPropertyValue('--dim').trim() || '#7a5a2a';
+
+  // Draw grid rings (25%, 50%, 75%, 100%)
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 0.5;
+  for (let ring = 0.25; ring <= 1.0; ring += 0.25) {
+    ctx.beginPath();
+    for (let s = 0; s <= 5; s++) {
+      const angle = (s % 5) * (Math.PI * 2 / 5) - Math.PI / 2;
+      const x = cx + Math.cos(angle) * maxR * ring;
+      const y = cy + Math.sin(angle) * maxR * ring;
+      if (s === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  // Draw axis lines
+  for (let s = 0; s < 5; s++) {
+    const angle = s * (Math.PI * 2 / 5) - Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(angle) * maxR, cy + Math.sin(angle) * maxR);
+    ctx.stroke();
+  }
+
+  // Draw data polygon (filled)
+  ctx.beginPath();
+  for (let s = 0; s < 5; s++) {
+    const angle = s * (Math.PI * 2 / 5) - Math.PI / 2;
+    const val = maxPop > 0 ? pops[s] / maxPop : 0;
+    const r = val * maxR;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+    if (s === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(221, 193, 101, 0.08)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(221, 193, 101, 0.3)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Draw species vertices
+  for (let s = 0; s < 5; s++) {
+    const angle = s * (Math.PI * 2 / 5) - Math.PI / 2;
+    const val = maxPop > 0 ? pops[s] / maxPop : 0;
+    const r = val * maxR;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+
+    // Dot at vertex
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = pops[s] === 0 ? dimColor : SPECIES_COLORS[s];
+    ctx.fill();
+
+    // Species label at edge
+    const lx = cx + Math.cos(angle) * (maxR + 12);
+    const ly = cy + Math.sin(angle) * (maxR + 12);
+    ctx.fillStyle = pops[s] === 0 ? dimColor : SPECIES_COLORS[s];
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(SPECIES_NAMES[s], lx, ly);
+  }
+}
+
 // ── Population chart ──
 function renderPopChart() {
   if (!popHistory.length) return;
@@ -480,8 +591,46 @@ function renderPopChart() {
     ctx.fillText(`${lastGen}`, pad.l + cw - 10, h - 3);
   }
 
-  // Species lines
+  // Ghost data (extinct species — faded dashed lines)
+  for (const [sStr, gdata] of Object.entries(ghostData)) {
+    const s = parseInt(sStr);
+    if (gdata.length < 2) continue;
+    ctx.strokeStyle = hexToRgba(SPECIES_COLORS[s], 0.2);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    for (let i = 0; i < gdata.length; i++) {
+      // Map ghost gen to chart x position
+      const firstGen = popHistory.length > 0 ? popHistory[0].gen : 0;
+      const lastGen = popHistory.length > 0 ? popHistory[popHistory.length - 1].gen : 1;
+      const genRange = lastGen - firstGen || 1;
+      const x = pad.l + ((gdata[i].gen - firstGen) / genRange) * cw;
+      const y = pad.t + ch - (gdata[i].pop / maxPop) * ch;
+      if (x < pad.l || x > pad.l + cw) continue;
+      if (i === 0 || gdata[i-1].gen < firstGen) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Death marker (×) at last data point
+    const last = gdata[gdata.length - 1];
+    const firstGen2 = popHistory.length > 0 ? popHistory[0].gen : 0;
+    const lastGen2 = popHistory.length > 0 ? popHistory[popHistory.length - 1].gen : 1;
+    const dx = pad.l + ((last.gen - firstGen2) / (lastGen2 - firstGen2 || 1)) * cw;
+    const dy = pad.t + ch - (last.pop / maxPop) * ch;
+    if (dx >= pad.l && dx <= pad.l + cw) {
+      ctx.strokeStyle = hexToRgba(SPECIES_COLORS[s], 0.5);
+      ctx.lineWidth = 1.5;
+      const m = 3;
+      ctx.beginPath(); ctx.moveTo(dx - m, dy - m); ctx.lineTo(dx + m, dy + m); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(dx - m, dy + m); ctx.lineTo(dx + m, dy - m); ctx.stroke();
+    }
+  }
+
+  // Living species lines
   for (let s = 0; s < 5; s++) {
+    if (knownExtinctions.has(s)) continue; // skip extinct — drawn as ghost above
     ctx.strokeStyle = SPECIES_COLORS[s];
     ctx.lineWidth = 1.5;
     ctx.globalAlpha = 0.85;
@@ -494,7 +643,7 @@ function renderPopChart() {
     }
     ctx.stroke();
 
-    // Glow effect for line visibility
+    // Glow
     ctx.strokeStyle = hexToRgba(SPECIES_COLORS[s], 0.15);
     ctx.lineWidth = 4;
     ctx.stroke();
@@ -642,6 +791,13 @@ const HELP_CONTENT = {
 <p><code>kills = a·P·N / (1 + a·h·N)</code></p>
 <p>This means predation <strong>saturates</strong> at high prey density — predators can't eat infinitely fast. <code>a</code> = attack rate, <code>h</code> = handling time, <code>P</code> = predators, <code>N</code> = prey.</p>
 <p>Scientists use these exact equations to model real ecosystems. The Lotka-Volterra predator-prey cycle you see in the chart is an emergent property — not coded directly.</p>`,
+  },
+  pentagon: {
+    title: 'Ecosystem Balance',
+    body: `<p>The pentagon diagram shows all 5 species' <strong>relative population strength</strong> simultaneously. Each vertex represents one species.</p>
+<p>A balanced ecosystem produces a roughly even pentagon. When one species dominates, its vertex stretches outward while others contract.</p>
+<p>Ecologists call this a <strong>community composition</strong> diagram. It reveals at a glance whether the ecosystem is in equilibrium or if one trophic level is collapsing.</p>
+<p>When a species goes extinct, its vertex collapses to the center — the pentagon becomes a quadrilateral, then a triangle.</p>`,
   },
   journal: {
     title: 'Field Journal',

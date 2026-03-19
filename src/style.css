@@ -199,6 +199,12 @@ html, body {
   display: flex; flex-direction: column; gap: 8px;
 }
 
+#pentagon-chart {
+  width: 100%; height: 140px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
 #pop-chart {
   width: 100%; height: 160px;
   background: var(--card);
