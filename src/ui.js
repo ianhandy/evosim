@@ -8,6 +8,7 @@ import { GLOBAL } from './layout.js';
 import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
 import { drawPortrait } from './creatures.js';
 import { checkForEntries, getRecent } from './journal.js';
+import { MapRenderer } from './render.js';
 
 // ── DOM refs ──
 const $ = id => document.getElementById(id);
@@ -28,6 +29,7 @@ let gridSize = 12;
 let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
+let mapRenderer = null; // WebGL renderer (null = use Canvas 2D fallback)
 
 // Camera state
 let camTilt = 0.5;   // 0.2 (flat) to 0.8 (steep)
@@ -178,6 +180,17 @@ $('btn-begin').addEventListener('click', async () => {
 
     loader.classList.add('hidden');
     app.classList.remove('hidden');
+
+    // Initialize WebGL renderer
+    mapRenderer = new MapRenderer(mapCanvas);
+    if (!mapRenderer.fallback) {
+      mapRenderer.setup(gridSize);
+      console.log('WebGL map renderer initialized');
+    } else {
+      console.log('Using Canvas 2D map fallback');
+      mapRenderer = null;
+    }
+
     resizeCanvases();
     startRenderLoop();
   } catch (err) {
@@ -363,7 +376,19 @@ function startRenderLoop() {
     }
 
     // Render map (every frame — camera might move)
-    renderMap(views);
+    if (mapRenderer) {
+      // WebGL path
+      if (gen !== lastRenderedGen || true) { // always update for camera movement
+        mapRenderer.updateData(views.elevations, views.biomes);
+      }
+      mapRenderer.render(
+        { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY },
+        getBiomeColors()
+      );
+    } else {
+      // Canvas 2D fallback
+      renderMap(views);
+    }
 
     renderFrameId = requestAnimationFrame(frame);
   }
@@ -1059,6 +1084,14 @@ btnLoadSave.addEventListener('click', async () => {
     sim.loadGame();
     loader.classList.add('hidden');
     app.classList.remove('hidden');
+
+    mapRenderer = new MapRenderer(mapCanvas);
+    if (!mapRenderer.fallback) {
+      mapRenderer.setup(savedGridSize);
+    } else {
+      mapRenderer = null;
+    }
+
     resizeCanvases();
     startRenderLoop();
   } catch (err) {
