@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>evosim</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- LOADER -->
+<div id="loader">
+  <h1>EVOSIM</h1>
+  <p id="loader-msg">Initializing...</p>
+  <div class="loader-bar"><div class="loader-fill" id="loader-fill"></div></div>
+</div>
+
+<!-- SETUP SCREEN -->
+<div id="setup" class="hidden">
+  <h1>EVOSIM</h1>
+  <p class="subtitle">Configure your observation</p>
+  <div class="setup-form">
+    <div class="setup-row">
+      <label>Seed</label>
+      <input type="text" id="seed-input" maxlength="6" spellcheck="false" autocomplete="off">
+      <button class="btn" onclick="randomSeed()">Random</button>
+    </div>
+    <div class="setup-row">
+      <label>Grid</label>
+      <div class="size-options" id="size-options">
+        <button class="size-btn" data-size="8">8×8</button>
+        <button class="size-btn active" data-size="12">12×12</button>
+        <button class="size-btn" data-size="16">16×16</button>
+      </div>
+    </div>
+  </div>
+  <canvas id="preview-canvas"></canvas>
+  <button class="btn-primary" id="btn-begin">Begin Observation</button>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <header id="header">
+    <h1>EVOSIM</h1>
+    <div class="controls" id="controls">
+      <button class="btn" id="btn-play">▶ Play</button>
+      <button class="btn speed-btn active" data-speed="1">1×</button>
+      <button class="btn speed-btn" data-speed="5">5×</button>
+      <button class="btn speed-btn" data-speed="20">20×</button>
+      <button class="btn speed-btn" data-speed="100">100×</button>
+    </div>
+    <span id="gen-counter">Gen <span id="gen-num">0</span></span>
+    <span id="season-label"></span>
+  </header>
+
+  <main id="main">
+    <section id="map-area">
+      <canvas id="map-canvas"></canvas>
+    </section>
+    <aside id="panel">
+      <div id="species-cards"></div>
+      <div id="charts-area">
+        <canvas id="pop-chart"></canvas>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script type="module" src="ui.js"></script>
+</body>
+</html>
