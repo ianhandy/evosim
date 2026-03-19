@@ -146,20 +146,17 @@ def _fbm_noise(size, seed_val, octaves=6, lacunarity=2.0, gain=0.5):
 
 def _generate_terrain(seed_str):
     """
-    Generate a single large island (or connected landmass) that fills most
-    of the grid. Water is mostly at the edges — the coastline.
+    Generate terrain by simulating tectonic plate collision.
 
-    The island shape is organic and varied — not a circle or rectangle.
-    The camera should focus on the land, not empty ocean.
-
-    Algorithm:
-    1. Create a large organic blob mask centered on the grid
-       - Random walk / blob union for irregular shape
-       - Fills ~60-75% of the grid with land
-    2. FBM noise for elevation detail within the landmass
-    3. Edge falloff creates natural coastline
-    4. Ridge features for mountain spines
-    5. Narrow water channels and bays cut into the landmass for variety
+    1. Start with a flat plane of random low-frequency noise (primordial crust)
+    2. Create N tectonic plates with drift vectors
+    3. Simulate T steps of plate movement:
+       - Convergent boundaries: uplift (mountains, ridges)
+       - Divergent boundaries: rift valleys, lower elevation
+       - Plate interiors: stable, slight noise
+    4. Snapshot the result at a random point in the timeline
+    5. Apply FBM detail noise for surface features
+    6. Edge falloff for ocean border
     """
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
@@ -168,109 +165,96 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Step 1: Create organic landmass shape ──
-    # Use overlapping ellipses with random positions/sizes to create
-    # an irregular blob that fills most of the grid
-    mask = np.zeros((gs, gs), dtype=np.float32)
+    # ── Primordial crust: low-frequency noise baseline ──
+    crust = _smooth_noise(gs, seed_val, scale=0.3)
+    crust = crust * 0.3 + 0.2  # baseline 0.2–0.5
 
-    # Main body — large ellipse near center
-    cx = gs * (0.4 + rng.uniform(0, 0.2))
-    cy = gs * (0.4 + rng.uniform(0, 0.2))
-    # Aspect ratio: sometimes tall, sometimes wide
-    aspect = rng.uniform(0.6, 1.6)
-    main_r = gs * rng.uniform(0.32, 0.42)
+    # ── Create tectonic plates via Voronoi ──
+    num_plates = max(3, gs // 12)
+    plate_seeds = []
+    for _ in range(num_plates):
+        plate_seeds.append((
+            rng.uniform(gs * 0.1, gs * 0.9),
+            rng.uniform(gs * 0.1, gs * 0.9),
+        ))
 
-    # Add 5-12 overlapping blobs to create irregular coastline
-    num_blobs = 5 + rng.randint(0, 8)
-    blobs = [(cx, cy, main_r, main_r * aspect, rng.uniform(0, math.pi))]
-    for _ in range(num_blobs):
-        # Each blob is near an existing blob (connected landmass)
-        parent = blobs[rng.randint(0, len(blobs))]
-        angle = rng.uniform(0, 2 * math.pi)
-        dist = parent[2] * rng.uniform(0.3, 0.8)
-        bx = parent[0] + math.cos(angle) * dist
-        by = parent[1] + math.sin(angle) * dist
-        br = gs * rng.uniform(0.08, 0.25)
-        ba = br * rng.uniform(0.5, 1.5)
-        brot = rng.uniform(0, math.pi)
-        blobs.append((bx, by, br, ba, brot))
-
-    # Rasterize blobs into mask
+    # Assign tiles to nearest plate
+    plate_id = np.zeros((gs, gs), dtype=np.int32)
     for r in range(gs):
         for c in range(gs):
-            for bx, by, brx, bry, brot in blobs:
-                # Rotated ellipse distance
-                dx = r - bx
-                dy = c - by
-                rx = dx * math.cos(brot) + dy * math.sin(brot)
-                ry = -dx * math.sin(brot) + dy * math.cos(brot)
-                d = (rx / max(1, brx)) ** 2 + (ry / max(1, bry)) ** 2
-                if d < 1:
-                    t = math.sqrt(d)
-                    falloff = (1 - t * t) ** 2
-                    mask[r, c] = max(mask[r, c], falloff)
+            min_d = 1e9
+            for pi, (pr, pc) in enumerate(plate_seeds):
+                d = (r - pr)**2 + (c - pc)**2
+                if d < min_d:
+                    min_d = d
+                    plate_id[r, c] = pi
 
-    # ── Step 2: Cut water channels/bays into the landmass ──
-    # Random sinusoidal cuts create inlets, bays, and narrow straits
-    num_cuts = rng.randint(1, 4)
-    for _ in range(num_cuts):
-        cut_start = rng.uniform(0, gs)
-        cut_dir = rng.choice(['h', 'v'])
-        cut_width = gs * rng.uniform(0.02, 0.06)
-        cut_freq = rng.uniform(0.05, 0.15)
-        cut_amp = gs * rng.uniform(0.03, 0.1)
-        cut_depth = rng.uniform(0.4, 0.8)
-        for i in range(gs):
-            offset = cut_start + math.sin(i * cut_freq) * cut_amp
-            for w in range(int(cut_width * 2)):
-                pos = int(offset - cut_width + w)
-                if 0 <= pos < gs:
-                    if cut_dir == 'h':
-                        ri, ci = i, pos
+    # Plate drift vectors (direction + magnitude)
+    drifts = []
+    for _ in range(num_plates):
+        angle = rng.uniform(0, 2 * math.pi)
+        speed = rng.uniform(0.3, 1.5)
+        drifts.append((math.cos(angle) * speed, math.sin(angle) * speed))
+
+    # ── Simulate tectonic steps ──
+    sim_steps = rng.randint(30, 80)  # random point in geological timeline
+    for step in range(sim_steps):
+        # Find plate boundaries and apply forces
+        for r in range(1, gs - 1):
+            for c in range(1, gs - 1):
+                pid = plate_id[r, c]
+                dr, dc = drifts[pid]
+
+                # Check neighbors for different plates
+                for nr, nc in [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]:
+                    npid = plate_id[nr, nc]
+                    if npid == pid:
+                        continue
+
+                    ndr, ndc = drifts[npid]
+
+                    # Relative motion toward each other = convergent
+                    # Vector from this tile toward neighbor
+                    toward_r = nr - r
+                    toward_c = nc - c
+                    # Dot product of drift with toward-vector
+                    convergence = (dr * toward_r + dc * toward_c) - (ndr * toward_r + ndc * toward_c)
+
+                    if convergence > 0:
+                        # Convergent: uplift (mountains form)
+                        crust[r, c] += 0.003 * convergence
                     else:
-                        ri, ci = pos, i
-                    if 0 <= ri < gs and 0 <= ci < gs:
-                        mask[ri, ci] *= (1 - cut_depth * max(0, 1 - abs(w - cut_width) / cut_width))
+                        # Divergent: rift (lower)
+                        crust[r, c] += 0.001 * convergence  # convergence is negative
 
-    # ── Step 3: FBM noise for elevation detail ──
-    terrain_noise = _fbm_noise(gs, seed_val, octaves=6)
+    # ── Apply FBM detail noise ──
+    detail = _fbm_noise(gs, seed_val + 4444, octaves=5, gain=0.5)
+    result = crust * 0.7 + detail * 0.3
 
-    # Combine: mask provides shape, noise provides height variation
-    result = mask * 0.4 + mask * terrain_noise * 0.6
-
-    # ── Step 4: Edge falloff — ensure water at grid borders ──
-    border = gs * 0.08
+    # ── Edge falloff — ocean at borders ──
+    border = gs * 0.06
     for r in range(gs):
         for c in range(gs):
             edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
             if edge_dist < border:
-                result[r, c] *= (edge_dist / border) ** 1.5
+                result[r, c] *= (edge_dist / border) ** 2
 
-    # ── Step 5: Ridge features ──
-    ridge = _fbm_noise(gs, seed_val + 9999, octaves=3, gain=0.4)
-    for r in range(gs):
-        for c in range(gs):
-            if result[r, c] > 0.35:
-                spine = abs(ridge[r, c] - 0.5) * 2
-                result[r, c] += spine * 0.12 * (result[r, c] - 0.25)
-
-    # ── Normalize ──
+    # ── Normalize to 0–1 ──
     lo, hi = result.min(), result.max()
     if hi > lo:
         result = (result - lo) / (hi - lo)
 
-    # Boost land — shift distribution so ~60-70% of tiles are above water
-    # Find the elevation threshold that gives us ~35% water
+    # Adjust distribution: ~30% water, ~70% land
     sorted_elev = np.sort(result.ravel())
-    water_target = int(G2 * 0.32)
-    water_threshold = sorted_elev[water_target] if water_target < G2 else 0.15
-    # Remap: everything below threshold becomes deep water, rest stretches to fill 0-1
+    water_idx = int(G2 * 0.30)
+    threshold = sorted_elev[min(water_idx, G2 - 1)]
+    # Remap below threshold to 0–0.14, above to 0.15–1.0
     for r in range(gs):
         for c in range(gs):
-            if result[r, c] < water_threshold:
-                result[r, c] = result[r, c] / max(0.01, water_threshold) * 0.14
+            if result[r, c] <= threshold:
+                result[r, c] = (result[r, c] / max(0.001, threshold)) * 0.14
             else:
-                result[r, c] = 0.15 + (result[r, c] - water_threshold) / max(0.01, 1 - water_threshold) * 0.85
+                result[r, c] = 0.15 + (result[r, c] - threshold) / max(0.001, 1 - threshold) * 0.85
 
     elevations[:] = result
     _assign_biomes()

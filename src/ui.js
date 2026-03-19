@@ -456,13 +456,11 @@ function renderMap(views) {
   const offsetX = w / 2 + camPanX;
   const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
 
-  // Water level — a flat horizontal plane. Terrain below this is underwater.
-  // The map is one continuous morphed surface; water is just the level.
+  // Water level plane
   const WATER_LEVEL = 0.18;
 
-  // Floor elevation — the bottom of all pillars. Deep below the terrain
-  // so underwater terrain has tall visible sides showing depth.
-  const FLOOR_ELEV = -0.3;
+  // No artificial floor — pillars extend to each tile's actual elevation.
+  // The diorama shows the full terrain depth.
 
   const BIOME_COLORS = getBiomeColors();
 
@@ -481,31 +479,37 @@ function renderMap(views) {
     return (n - Math.floor(n)) * 2 - 1; // -1 to 1
   }
 
-  // Precompute water level iso position (same for all tiles in a row/col)
-  // Water is a flat plane at WATER_LEVEL elevation
+  // Find global min elevation for the floor
+  let minElev = 1;
+  for (let i = 0; i < gs * gs; i++) {
+    if (views.elevations[i] < minElev) minElev = views.elevations[i];
+  }
+  const FLOOR_ELEV = minElev - 0.02; // just below the deepest tile
 
-  // Single pass: back-to-front. Terrain is one continuous surface.
-  // Water is a color overlay based on depth below the water level.
+  // Helper: draw a filled quad
+  function quad(ax,ay, bx,by, cx,cy, dx,dy) {
+    ctx.beginPath();
+    ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.lineTo(cx,cy); ctx.lineTo(dx,dy);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Single pass: back-to-front
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
       const idx = r * gs + c;
       const elev = views.elevations[idx];
       const biome = views.biomes[idx];
       const underwater = elev < WATER_LEVEL;
-      const waterDepth = underwater ? WATER_LEVEL - elev : 0; // 0 = at surface, higher = deeper
+      const depth = underwater ? WATER_LEVEL - elev : 0;
 
-      // ── TERRAIN COLOR (the actual ground, even if underwater) ──
+      // ── Terrain color ──
       const bc = BIOME_COLORS[biome] || [30, 20, 10];
-      const nz = tileNoise(r, c);
-      const nz2 = tileNoise(r + 100, c + 200);
-      let tr = bc[0] + elev * 25 + nz * 12;
-      let tg = bc[1] + elev * 18 + nz2 * 10;
-      let tb = bc[2] + elev * 12 + nz * 6;
-      tr = Math.max(0, Math.min(255, tr));
-      tg = Math.max(0, Math.min(255, tg));
-      tb = Math.max(0, Math.min(255, tb));
+      const nz = tileNoise(r, c), nz2 = tileNoise(r + 100, c + 200);
+      let tr = Math.max(0, Math.min(255, bc[0] + elev * 25 + nz * 12));
+      let tg = Math.max(0, Math.min(255, bc[1] + elev * 18 + nz2 * 10));
+      let tb = Math.max(0, Math.min(255, bc[2] + elev * 12 + nz * 6));
 
-      // Directional shade
+      // Shade
       let shade = 0.65;
       if (r > 0 && c > 0) {
         const hL = views.elevations[r * gs + (c - 1)];
@@ -513,130 +517,92 @@ function renderMap(views) {
         shade = 0.5 + 0.5 * Math.max(0, Math.min(1, 0.5 + (elev - hL) * 2.5 + (elev - hU) * 2));
       }
 
-      // Terrain renders at ACTUAL elevation (even below water)
-      const ctr = isoXY(r, c, elev);
-      const top    = { x: ctr.x,               y: ctr.y - tileH * 0.5 };
-      const right  = { x: ctr.x + tileW * 0.5, y: ctr.y };
-      const bottom = { x: ctr.x,               y: ctr.y + tileH * 0.5 };
-      const left   = { x: ctr.x - tileW * 0.5, y: ctr.y };
+      // Surface diamond (actual terrain elevation)
+      const s = isoXY(r, c, elev);
+      const sT = { x: s.x, y: s.y - tileH * 0.5 };
+      const sR = { x: s.x + tileW * 0.5, y: s.y };
+      const sB = { x: s.x, y: s.y + tileH * 0.5 };
+      const sL = { x: s.x - tileW * 0.5, y: s.y };
 
-      // Floor
-      const flr = isoXY(r, c, FLOOR_ELEV);
-      const flrTop    = { x: flr.x,               y: flr.y - tileH * 0.5 };
-      const flrRight  = { x: flr.x + tileW * 0.5, y: flr.y };
-      const flrBottom = { x: flr.x,               y: flr.y + tileH * 0.5 };
-      const flrLeft   = { x: flr.x - tileW * 0.5, y: flr.y };
+      // Floor diamond (deepest point in the map)
+      const f = isoXY(r, c, FLOOR_ELEV);
+      const fT = { x: f.x, y: f.y - tileH * 0.5 };
+      const fR = { x: f.x + tileW * 0.5, y: f.y };
+      const fB = { x: f.x, y: f.y + tileH * 0.5 };
+      const fL = { x: f.x - tileW * 0.5, y: f.y };
 
-      // ── SIDE FACES — terrain drops to floor ──
-      ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(right.x, right.y); ctx.lineTo(bottom.x, bottom.y);
-      ctx.lineTo(flrBottom.x, flrBottom.y); ctx.lineTo(flrRight.x, flrRight.y);
-      ctx.fill();
+      // ── SIDE FACES ──
+      ctx.fillStyle = `rgb(${tr*shade*0.45|0},${tg*shade*0.45|0},${tb*shade*0.45|0})`;
+      quad(sR.x,sR.y, sB.x,sB.y, fB.x,fB.y, fR.x,fR.y);
 
-      ctx.fillStyle = `rgb(${tr * shade * 0.35 | 0},${tg * shade * 0.35 | 0},${tb * shade * 0.35 | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(left.x, left.y); ctx.lineTo(bottom.x, bottom.y);
-      ctx.lineTo(flrBottom.x, flrBottom.y); ctx.lineTo(flrLeft.x, flrLeft.y);
-      ctx.fill();
+      ctx.fillStyle = `rgb(${tr*shade*0.35|0},${tg*shade*0.35|0},${tb*shade*0.35|0})`;
+      quad(sL.x,sL.y, sB.x,sB.y, fB.x,fB.y, fL.x,fL.y);
 
       if (r === 0) {
-        ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
-        ctx.beginPath();
-        ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
-        ctx.lineTo(flrRight.x, flrRight.y); ctx.lineTo(flrTop.x, flrTop.y);
-        ctx.fill();
+        ctx.fillStyle = `rgb(${tr*shade*0.3|0},${tg*shade*0.3|0},${tb*shade*0.3|0})`;
+        quad(sT.x,sT.y, sR.x,sR.y, fR.x,fR.y, fT.x,fT.y);
       }
       if (c === 0) {
-        ctx.fillStyle = `rgb(${tr * shade * 0.25 | 0},${tg * shade * 0.25 | 0},${tb * shade * 0.25 | 0})`;
-        ctx.beginPath();
-        ctx.moveTo(top.x, top.y); ctx.lineTo(left.x, left.y);
-        ctx.lineTo(flrLeft.x, flrLeft.y); ctx.lineTo(flrTop.x, flrTop.y);
-        ctx.fill();
+        ctx.fillStyle = `rgb(${tr*shade*0.25|0},${tg*shade*0.25|0},${tb*shade*0.25|0})`;
+        quad(sT.x,sT.y, sL.x,sL.y, fL.x,fL.y, fT.x,fT.y);
       }
 
-      // ── TOP FACE (terrain surface) ──
-      ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
-      ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
-      ctx.closePath();
-      ctx.fill();
+      // ── TOP FACE (terrain) ──
+      ctx.fillStyle = `rgb(${tr*shade|0},${tg*shade|0},${tb*shade|0})`;
+      quad(sT.x,sT.y, sR.x,sR.y, sB.x,sB.y, sL.x,sL.y);
 
-      // ── WATER OVERLAY — depth-based color at the water level plane ──
+      // ── WATER TILE — flat diamond at water level ON TOP of terrain ──
       if (underwater) {
-        // Water diamond at WATER_LEVEL (flat plane above the terrain)
-        const wctr = isoXY(r, c, WATER_LEVEL);
-        const wTop    = { x: wctr.x,               y: wctr.y - tileH * 0.5 };
-        const wRight  = { x: wctr.x + tileW * 0.5, y: wctr.y };
-        const wBottom = { x: wctr.x,               y: wctr.y + tileH * 0.5 };
-        const wLeft   = { x: wctr.x - tileW * 0.5, y: wctr.y };
+        const w = isoXY(r, c, WATER_LEVEL);
+        const wT = { x: w.x, y: w.y - tileH * 0.5 };
+        const wR = { x: w.x + tileW * 0.5, y: w.y };
+        const wB = { x: w.x, y: w.y + tileH * 0.5 };
+        const wL = { x: w.x - tileW * 0.5, y: w.y };
 
-        // Depth-based opacity: deeper = darker blue, more opaque
-        const depthNorm = Math.min(1, waterDepth / 0.2); // 0=shore, 1=deep
-        const alpha = 0.25 + depthNorm * 0.45; // 0.25 shallow → 0.7 deep
-        const blueR = Math.round(10 + (1 - depthNorm) * 20);  // lighter shallow
-        const blueG = Math.round(30 + (1 - depthNorm) * 40);
-        const blueB = Math.round(60 + (1 - depthNorm) * 50);
+        // Depth gradient: shallow=bright blue (0.3α), deep=blue-black (0.9α)
+        const dn = Math.min(1, depth / 0.18);  // normalized depth
+        const alpha = 0.3 + dn * 0.6;
+        const wr = Math.round(20 + (1 - dn) * 60);   // 80 shallow → 20 deep
+        const wg = Math.round(80 + (1 - dn) * 80);    // 160 shallow → 80 deep
+        const wb = Math.round(140 + (1 - dn) * 60);   // 200 shallow → 140 deep
 
-        ctx.fillStyle = `rgba(${blueR}, ${blueG}, ${blueB}, ${alpha.toFixed(2)})`;
-        ctx.beginPath();
-        ctx.moveTo(wTop.x, wTop.y); ctx.lineTo(wRight.x, wRight.y);
-        ctx.lineTo(wBottom.x, wBottom.y); ctx.lineTo(wLeft.x, wLeft.y);
-        ctx.closePath();
-        ctx.fill();
+        ctx.fillStyle = `rgba(${wr},${wg},${wb},${alpha.toFixed(2)})`;
+        quad(wT.x,wT.y, wR.x,wR.y, wB.x,wB.y, wL.x,wL.y);
       }
 
-      // ── OVERLAYS (on land above water) ──
+      // ── OVERLAYS ──
       if (!underwater) {
         if (views.tileFlags[idx] & 1) {
-          ctx.fillStyle = 'rgba(25, 75, 135, 0.4)';
-          ctx.beginPath();
-          ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
-          ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
-          ctx.closePath();
-          ctx.fill();
+          ctx.fillStyle = 'rgba(25,75,135,0.4)';
+          quad(sT.x,sT.y, sR.x,sR.y, sB.x,sB.y, sL.x,sL.y);
         }
         if (views.tileFlags[idx] & 2) {
-          ctx.fillStyle = 'rgba(229, 89, 28, 0.3)';
-          ctx.beginPath();
-          ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
-          ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
-          ctx.closePath();
-          ctx.fill();
+          ctx.fillStyle = 'rgba(229,89,28,0.3)';
+          quad(sT.x,sT.y, sR.x,sR.y, sB.x,sB.y, sL.x,sL.y);
         }
       }
 
-      // Species population overlay (land and water)
-      const drawAt = underwater ? isoXY(r, c, WATER_LEVEL) : ctr;
-      const pTop    = { x: drawAt.x,               y: drawAt.y - tileH * 0.5 };
-      const pRight  = { x: drawAt.x + tileW * 0.5, y: drawAt.y };
-      const pBottom = { x: drawAt.x,               y: drawAt.y + tileH * 0.5 };
-      const pLeft   = { x: drawAt.x - tileW * 0.5, y: drawAt.y };
-
+      // Species overlay (on water level for underwater, terrain for land)
+      const pBase = underwater ? isoXY(r, c, WATER_LEVEL) : s;
       let maxPop = 0, maxS = -1;
-      for (let s = 0; s < 5; s++) {
-        const p = views.populations[idx * 5 + s];
-        if (p > maxPop) { maxPop = p; maxS = s; }
+      for (let sp = 0; sp < 5; sp++) {
+        const p = views.populations[idx * 5 + sp];
+        if (p > maxPop) { maxPop = p; maxS = sp; }
       }
       if (maxPop > 5 && maxS >= 0) {
         const intensity = Math.min(0.4, maxPop / 250);
         ctx.fillStyle = hexToRgba(SPECIES_COLORS[maxS], intensity);
-        ctx.beginPath();
-        ctx.moveTo(pTop.x, pTop.y); ctx.lineTo(pRight.x, pRight.y);
-        ctx.lineTo(pBottom.x, pBottom.y); ctx.lineTo(pLeft.x, pLeft.y);
-        ctx.closePath();
-        ctx.fill();
+        quad(pBase.x, pBase.y - tileH*0.5, pBase.x + tileW*0.5, pBase.y,
+             pBase.x, pBase.y + tileH*0.5, pBase.x - tileW*0.5, pBase.y);
       }
 
       // Grid line
-      ctx.strokeStyle = 'rgba(221,193,101,0.04)';
+      ctx.strokeStyle = 'rgba(221,193,101,0.03)';
       ctx.lineWidth = 0.5;
       ctx.beginPath();
-      ctx.moveTo(top.x, top.y); ctx.lineTo(right.x, right.y);
-      ctx.lineTo(bottom.x, bottom.y); ctx.lineTo(left.x, left.y);
-      ctx.closePath();
-      ctx.stroke();
+      ctx.moveTo(sT.x,sT.y); ctx.lineTo(sR.x,sR.y);
+      ctx.lineTo(sB.x,sB.y); ctx.lineTo(sL.x,sL.y);
+      ctx.closePath(); ctx.stroke();
     }
   }
 

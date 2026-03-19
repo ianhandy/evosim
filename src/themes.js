@@ -26,14 +26,14 @@ export const THEMES = {
       '--dim':        '#7a5a2a',
     },
     biomes: [
-      [15, 30, 60],   // deep_water
-      [30, 55, 40],   // shallow_marsh
-      [45, 60, 30],   // reed_beds
-      [60, 50, 35],   // tidal_flats
-      [75, 58, 45],   // rocky_shore
+      [40, 55, 70],    // deep_water — dark ocean floor (visible under deep water)
+      [60, 75, 65],    // shallow_marsh — muddy shallows / mangrove
+      [45, 100, 40],   // reed_beds — tropical green forest
+      [190, 175, 130], // tidal_flats — sandy beach
+      [90, 60, 45],    // rocky_shore — volcanic rock / mountain
     ],
-    water: 'rgba(20, 50, 80, 0.2)',
-    mapBg: '#120800',
+    water: 'rgba(20, 80, 140, 0.3)',
+    mapBg: '#0a0800',
   },
 
   'deep-ocean': {
