@@ -64,11 +64,29 @@ export function checkForEntries(gen, pops, season) {
     }
   }
 
-  // Season transitions (roughly)
-  if (season < 0.15 && gen > 50) {
-    // Deep winter
-    if (gen % SEASON_CHECK_MOD === 0) {
-      _add(gen, _winter(gen), 'season', {});
+  // Dominance detection — one species > 60% of total
+  const totalPop = pops.reduce((a, b) => a + b, 0);
+  if (totalPop > 100) {
+    for (let s = 0; s < 5; s++) {
+      if (pops[s] / totalPop > 0.6 && (lastPops[s] / Math.max(1, lastPops.reduce((a,b)=>a+b,0))) <= 0.6) {
+        _add(gen, _dominance(s, pops[s], totalPop, gen), 'dominance', { species: s });
+      }
+    }
+  }
+
+  // Season transitions
+  if (season < 0.15 && gen > 50 && gen % SEASON_CHECK_MOD === 0) {
+    _add(gen, _winter(gen), 'season', {});
+  }
+  if (season > 0.9 && gen > 50 && gen % SEASON_CHECK_MOD === 0) {
+    _add(gen, _summer(gen), 'season', {});
+  }
+
+  // Ecosystem recovery — all 5 species alive and total pop > 1000 after a crash
+  if (gen > 200 && pops.every(p => p > 0) && totalPop > 1000) {
+    const prevTotal = lastPops.reduce((a,b) => a + b, 0);
+    if (prevTotal < 500 && totalPop > 1000) {
+      _add(gen, _recovery(gen, totalPop), 'recovery', {});
     }
   }
 
@@ -147,10 +165,27 @@ function _milestone(s, pop, gen) {
   return `Gen ${gen}. ${SPECIES_FULL[s]} has crossed 1,000 individuals. A robust population — though permanence is never guaranteed in this system.`;
 }
 
+function _dominance(s, pop, total, gen) {
+  const pct = Math.round(pop / total * 100);
+  return `Gen ${gen}. ${SPECIES_FULL[s]} dominates — ${pct}% of the total population. The ecosystem balance is tilting.`;
+}
+
 function _winter(gen) {
   const texts = [
     `Gen ${gen}. Deep winter. Food regrowth has slowed to a crawl. The species with high metabolism will feel this first.`,
     `Gen ${gen}. The seasonal low point. Vegetation is sparse, competition fierce. Winter always reveals who's adapted and who's borrowed time.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
+}
+
+function _summer(gen) {
+  const texts = [
+    `Gen ${gen}. Peak summer. Vegetation flourishes. Populations swell. But abundance breeds competition.`,
+    `Gen ${gen}. The warm season. Food is plentiful, growth rates peak. The predators are well-fed. For now.`,
+  ];
+  return texts[Math.floor(Math.random() * texts.length)];
+}
+
+function _recovery(gen, pop) {
+  return `Gen ${gen}. Recovery. After a period of decline, the ecosystem bounces back — ${pop} total individuals across all species. Life finds a way.`;
 }

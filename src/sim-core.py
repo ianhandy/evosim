@@ -477,6 +477,44 @@ def _has_active_event(event_type):
     return any(e['type'] == event_type for e in active_events)
 
 
+# ── BACKGROUND EROSION ────────────────────────────────────────────────────────
+
+EROSION_RATE = 0.0003  # elevation loss per gen for high tiles
+
+def _apply_erosion():
+    """
+    Slow background erosion of high-elevation tiles.
+    Over geological time, mountains wear down.
+    Equation: Δelev = -ε × max(0, elev - mean_neighbor_elev)
+    See evolution-simulation-research.md §12.8
+    """
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            e = elevations[r, c]
+            if e < 0.3:
+                continue  # don't erode low tiles
+            # Mean neighbor elevation
+            neighbors = []
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+                    neighbors.append(elevations[nr, nc])
+            if not neighbors:
+                continue
+            mean_n = sum(neighbors) / len(neighbors)
+            diff = e - mean_n
+            if diff > 0:
+                elevations[r, c] -= EROSION_RATE * diff
+                elevations[r, c] = max(0, elevations[r, c])
+                # Reclassify biome if elevation changed significantly
+                new_e = elevations[r, c]
+                if new_e < 0.15: biomes[r, c] = BIOME_DEEP_WATER
+                elif new_e < 0.30: biomes[r, c] = BIOME_SHALLOW_MARSH
+                elif new_e < 0.50: biomes[r, c] = BIOME_REED_BEDS
+                elif new_e < 0.70: biomes[r, c] = BIOME_TIDAL_FLATS
+                else: biomes[r, c] = BIOME_ROCKY_SHORE
+
+
 # ── RIVERS & TERRAIN DYNAMICS ─────────────────────────────────────────────────
 # Rivers are directed-path overlays on the elevation grid.
 # They spawn at high elevation, advance downhill, erode banks, form oxbows.
@@ -931,6 +969,10 @@ def step_simulation(n=1):
             _step_migration()
         elif generation % 5 == 0:
             _step_migration()
+
+        # Terrain dynamics
+        if generation % 10 == 0:  # erosion every 10 gens (slow process)
+            _apply_erosion()
 
         # Rivers (geological timescale)
         _spawn_river()
