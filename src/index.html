@@ -34,10 +34,22 @@
         <button class="size-btn" data-size="128">128×128</button>
       </div>
     </div>
+    <div class="setup-row challenge-row">
+      <label>Mode</label>
+      <div class="challenge-options" id="challenge-options">
+        <button class="challenge-btn active" data-challenge="-1">Free Observation</button>
+        <button class="challenge-btn" data-challenge="0">The Conservationist <span class="challenge-hint">All 5 alive at gen 3,000</span></button>
+        <button class="challenge-btn" data-challenge="1">The Diverger <span class="challenge-hint">Speciation within 1,000 gens</span></button>
+        <button class="challenge-btn" data-challenge="2">Perfect Ecosystem <span class="challenge-hint">All 5 survive to gen 5,000</span></button>
+        <button class="challenge-btn" data-challenge="3">Resilience <span class="challenge-hint">Species recovers from &lt;50 to &gt;500</span></button>
+        <button class="challenge-btn" data-challenge="4">Speed Observer <span class="challenge-hint">Reach gen 10,000</span></button>
+      </div>
+    </div>
   </div>
   <canvas id="preview-canvas"></canvas>
   <button class="btn-primary" id="btn-begin">Begin Observation</button>
   <button class="btn" id="btn-load-save" style="display:none;margin-top:8px;">Resume Saved Observation</button>
+  <button class="btn" id="btn-history" style="display:none;margin-top:8px;">View History</button>
 </div>
 
 <!-- APP -->
@@ -53,6 +65,7 @@
     </div>
     <span id="gen-counter">Gen <span id="gen-num">0</span></span>
     <span id="season-label"></span>
+    <span id="challenge-badge" class="hidden"></span>
     <div class="header-right">
       <button class="btn btn-small" id="btn-end" title="End observation">End</button>
       <button class="btn btn-small" id="btn-save" title="Save observation">Save</button>
@@ -104,6 +117,7 @@
     <div id="end-seed"></div>
     <div id="end-stats"></div>
     <div id="end-species-list"></div>
+    <div id="end-challenge-result" class="hidden"></div>
     <div id="end-actions">
       <button class="btn" id="end-new">New Observation</button>
       <button class="btn" id="end-close">Continue Watching</button>
@@ -121,6 +135,20 @@
     <div id="eulogy-stats"></div>
     <canvas id="eulogy-sparkline" width="200" height="40"></canvas>
     <button class="btn" id="eulogy-dismiss">Continue Observation</button>
+  </div>
+</div>
+
+<!-- ACHIEVEMENT TOAST -->
+<div id="achievement-toast" class="hidden">
+  <div id="achievement-toast-text"></div>
+</div>
+
+<!-- HALL OF OBSERVATIONS OVERLAY -->
+<div id="hall-overlay" class="hidden">
+  <div id="hall-card">
+    <div id="hall-title">Hall of Observations</div>
+    <div id="hall-list"></div>
+    <button class="btn" id="hall-close">Close</button>
   </div>
 </div>
 

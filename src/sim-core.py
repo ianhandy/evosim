@@ -265,15 +265,18 @@ def _generate_terrain(seed_str):
 
 
 def _assign_biomes():
-    """Classify biomes from elevation thresholds."""
+    """
+    Classify biomes from elevation thresholds.
+    Order: deep water → shallow water → beach/sand → forest → mountain
+    """
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             e = elevations[r, c]
-            if   e < 0.15: biomes[r, c] = BIOME_DEEP_WATER
-            elif e < 0.30: biomes[r, c] = BIOME_SHALLOW_MARSH
-            elif e < 0.50: biomes[r, c] = BIOME_REED_BEDS
-            elif e < 0.70: biomes[r, c] = BIOME_TIDAL_FLATS
-            else:          biomes[r, c] = BIOME_ROCKY_SHORE
+            if   e < 0.12: biomes[r, c] = BIOME_DEEP_WATER      # ocean floor
+            elif e < 0.20: biomes[r, c] = BIOME_SHALLOW_MARSH    # coastal shallows
+            elif e < 0.30: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
+            elif e < 0.60: biomes[r, c] = BIOME_REED_BEDS        # forest / vegetation
+            else:          biomes[r, c] = BIOME_ROCKY_SHORE       # mountain / volcanic rock
 
 
 # ── POPULATION SEEDING ────────────────────────────────────────────────────────
