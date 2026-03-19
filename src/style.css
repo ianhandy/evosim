@@ -257,6 +257,33 @@ html, body {
 .species-card.extinct .sp-name { text-decoration: line-through; }
 .species-card.extinct .sp-pop { color: var(--red); font-size: 9px; }
 
+/* ── Journal Feed ── */
+#journal-feed {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.journal-entry {
+  font-size: 10px; line-height: 1.5;
+  color: var(--dim);
+  padding: 4px 8px;
+  border-left: 2px solid var(--border);
+  background: var(--card);
+  border-radius: 0 3px 3px 0;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.journal-entry:hover {
+  border-left-color: var(--gold);
+  color: var(--text);
+}
+.journal-entry.type-extinction { border-left-color: var(--red); }
+.journal-entry.type-endangered { border-left-color: var(--orange); }
+.journal-entry.type-boom { border-left-color: var(--green); }
+.journal-entry.type-crash { border-left-color: var(--orange); }
+.journal-entry.type-milestone { border-left-color: var(--blue); }
+.journal-entry.type-season { border-left-color: var(--dim); }
+
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

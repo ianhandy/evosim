@@ -7,6 +7,7 @@ import * as sim from './sim.js';
 import { GLOBAL } from './layout.js';
 import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
 import { drawPortrait } from './creatures.js';
+import { checkForEntries, getRecent } from './journal.js';
 
 // ── DOM refs ──
 const $ = id => document.getElementById(id);
@@ -26,6 +27,16 @@ let gridSize = 12;
 let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
+
+// Camera state
+let camTilt = 0.5;   // 0.2 (flat) to 0.8 (steep)
+let camZoom = 1.0;
+let camPanX = 0;
+let camPanY = 0;
+let isDragging = false;
+let dragButton = -1;
+let dragLastX = 0;
+let dragLastY = 0;
 
 // Population history for chart
 const popHistory = [];
@@ -116,6 +127,77 @@ function resizeCanvases() {
 
 window.addEventListener('resize', resizeCanvases);
 
+// ── Map camera controls ──
+mapCanvas.addEventListener('mousedown', e => {
+  isDragging = true;
+  dragButton = e.button;
+  dragLastX = e.clientX;
+  dragLastY = e.clientY;
+  e.preventDefault();
+});
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  const dx = e.clientX - dragLastX;
+  const dy = e.clientY - dragLastY;
+  dragLastX = e.clientX;
+  dragLastY = e.clientY;
+
+  if (dragButton === 2 || e.shiftKey) {
+    // Right-click or shift: tilt
+    camTilt = Math.max(0.2, Math.min(0.8, camTilt + dy * 0.004));
+  } else {
+    // Left-click: pan
+    camPanX += dx;
+    camPanY += dy;
+  }
+});
+window.addEventListener('mouseup', () => { isDragging = false; dragButton = -1; });
+mapCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
+mapCanvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.1 : 0.1;
+  camZoom = Math.max(0.4, Math.min(3.0, camZoom + delta));
+}, { passive: false });
+
+// Touch controls
+let touchStartDist = 0;
+let touchStartZoom = 1;
+mapCanvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    isDragging = true;
+    dragLastX = e.touches[0].clientX;
+    dragLastY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    isDragging = false;
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    touchStartDist = Math.sqrt(dx * dx + dy * dy);
+    touchStartZoom = camZoom;
+  }
+}, { passive: true });
+mapCanvas.addEventListener('touchmove', e => {
+  if (e.touches.length === 1 && isDragging) {
+    const dx = e.touches[0].clientX - dragLastX;
+    const dy = e.touches[0].clientY - dragLastY;
+    dragLastX = e.touches[0].clientX;
+    dragLastY = e.touches[0].clientY;
+    camPanX += dx;
+    camPanY += dy;
+  } else if (e.touches.length === 2) {
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    camZoom = Math.max(0.4, Math.min(3.0, touchStartZoom * (dist / touchStartDist)));
+  }
+}, { passive: true });
+mapCanvas.addEventListener('touchend', () => { isDragging = false; });
+
+// Double-click to reset camera
+mapCanvas.addEventListener('dblclick', () => {
+  camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0;
+});
+
 // ── Render loop (decoupled from sim) ──
 const SPECIES_COLORS = ['#DDC165', '#C0392B', '#2ECC71', '#E5591C', '#9B59B6'];
 
@@ -154,9 +236,13 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
-      // Render population chart + species cards
+      // Journal check
+      checkForEntries(gen, pops, seasonVal);
+
+      // Render population chart + species cards + journal
       renderPopChart();
       renderSpeciesCards(pops);
+      renderJournal();
     }
 
     // Render map (every frame — camera might move)
@@ -180,12 +266,13 @@ function renderMap(views) {
   ctx.fillRect(0, 0, w, h);
 
   const gs = sim.getLayout().gridSize;
-  const tileW = (w / gs) * 0.85;
-  const tileH = tileW * 0.5;
-  const heightScale = 60;
+  const baseTileW = (w / gs) * 0.85 * camZoom;
+  const tileW = baseTileW;
+  const tileH = tileW * camTilt;
+  const heightScale = 80 * camZoom;
 
-  const offsetX = w / 2;
-  const offsetY = (h - gs * tileH * 0.5) / 2 + heightScale * 0.3;
+  const offsetX = w / 2 + camPanX;
+  const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
 
   const BIOME_COLORS = getBiomeColors();
 
@@ -451,6 +538,22 @@ function renderSpeciesCards(totalPops) {
       drawPortrait(ctx, s, meanTraits[s], 40, SPECIES_COLORS[s]);
     }
   }
+}
+
+// ── Journal feed ──
+const journalFeed = $('journal-feed');
+let lastJournalCount = 0;
+
+function renderJournal() {
+  const entries = getRecent(15);
+  if (entries.length === lastJournalCount) return;
+  lastJournalCount = entries.length;
+
+  journalFeed.innerHTML = entries.map(e =>
+    `<div class="journal-entry type-${e.type}">${e.text}</div>`
+  ).join('');
+
+  journalFeed.scrollTop = journalFeed.scrollHeight;
 }
 
 // ── Theme selector ──
