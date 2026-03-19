@@ -7,7 +7,7 @@
  * - The renderer reads from the shared buffer independently at 60fps
  */
 
-import { createLayout, createViews, GLOBAL } from './layout.js';
+import { createLayout, createViews, GLOBAL, SPECIES_COUNT, TRAITS_PER_SPECIES, MAX_RIVERS, MAX_RIVER_POINTS } from './layout.js';
 
 let pyodide = null;
 let sharedBuffer = null;
@@ -19,7 +19,6 @@ let stepsPerTick = 1;
 let tickInterval = null;
 
 // Event queue for cold data (extinctions, speciation, epoch changes)
-// Python appends JSON strings here; JS reads and clears
 let eventQueue = [];
 
 export function getLayout() { return layout; }
@@ -30,19 +29,14 @@ export function getEventQueue() { const q = eventQueue; eventQueue = []; return 
 
 /**
  * Initialize Pyodide, create shared buffer, load sim code.
- * @param {number} gridSize - Grid dimension (e.g., 12 for 12×12)
- * @param {string} seed - RNG seed string
- * @param {function} onProgress - Progress callback(phase, percent)
  */
 export async function init(gridSize, seed, onProgress) {
   onProgress?.('pyodide', 10);
-
-  // Load Pyodide
   pyodide = await loadPyodide();
-  onProgress?.('numpy', 40);
 
-  // Load numpy
+  onProgress?.('numpy', 40);
   await pyodide.loadPackage('numpy');
+
   onProgress?.('buffer', 60);
 
   // Create layout and shared buffer
@@ -55,38 +49,43 @@ export async function init(gridSize, seed, onProgress) {
 
   onProgress?.('sim', 70);
 
-  // Make buffer accessible to Python
-  pyodide.globals.set('_shared_buffer', sharedBuffer);
+  // Set scalar globals accessible from Python
   pyodide.globals.set('_grid_size', gridSize);
   pyodide.globals.set('_seed', seed);
+  pyodide.globals.set('_species_count', SPECIES_COUNT);
+  pyodide.globals.set('_traits_per_species', TRAITS_PER_SPECIES);
+  pyodide.globals.set('_max_rivers', MAX_RIVERS);
+  pyodide.globals.set('_max_river_points', MAX_RIVER_POINTS);
 
-  // Pass layout offsets to Python as a dict
-  const layoutDict = {};
+  // Pass layout as JSON string
+  const layoutInfo = {};
   for (const [key, sec] of Object.entries(layout)) {
     if (sec && sec.offset !== undefined) {
-      layoutDict[key] = {
-        offset: sec.offset,
-        count: sec.count,
-        byteSize: sec.byteSize,
-        dtype: sec.TypedArray === Float64Array ? 'float64'
-             : sec.TypedArray === Float32Array ? 'float32'
-             : sec.TypedArray === Uint16Array  ? 'uint16'
-             : sec.TypedArray === Int16Array   ? 'int16'
-             : 'uint8',
-      };
+      layoutInfo[key] = { offset: sec.offset, count: sec.count, byteSize: sec.byteSize };
     }
   }
-  pyodide.globals.set('_layout', pyodide.toPy(layoutDict));
+  pyodide.globals.set('_layout_json', JSON.stringify(layoutInfo));
+
+  // Expose typed array views as JS globals that Python can write to via JsProxy.
+  // Python does `from js import _js_globals` then `_js_globals[0] = value`
+  // This writes directly into the SharedArrayBuffer — true zero-copy on write.
+  pyodide.globals.set('_js_globals', views.globals);
+  pyodide.globals.set('_js_elevations', views.elevations);
+  pyodide.globals.set('_js_biomes', views.biomes);
+  pyodide.globals.set('_js_vegetation', views.vegetation);
+  pyodide.globals.set('_js_populations', views.populations);
+  pyodide.globals.set('_js_trait_means', views.traitMeans);
+  pyodide.globals.set('_js_trait_var', views.traitVar);
+  pyodide.globals.set('_js_tile_flags', views.tileFlags);
 
   // Load and execute sim-core.py
   const simCode = await fetch('/sim-core.py').then(r => r.text());
   await pyodide.runPythonAsync(simCode);
+
   onProgress?.('init', 90);
-
-  // Initialize the simulation
   pyodide.runPython('init_simulation()');
-  onProgress?.('ready', 100);
 
+  onProgress?.('ready', 100);
   simReady = true;
 }
 
@@ -100,82 +99,55 @@ function step() {
   pyodide.runPython(`step_simulation(${stepsPerTick})`);
   const elapsed = performance.now() - t0;
 
-  // Write step timing for auto-LOD
   views.globals[GLOBAL.SIM_STEP_MS] = elapsed;
 
-  // Check for events (cold data — JSON, infrequent)
+  // Check for events (cold data)
   const eventsJson = pyodide.runPython('flush_events()');
   if (eventsJson && eventsJson !== '[]') {
     try {
-      const events = JSON.parse(eventsJson);
-      eventQueue.push(...events);
+      eventQueue.push(...JSON.parse(eventsJson));
     } catch {}
   }
 
-  // Auto-LOD: if step took > 50ms, switch to simplified
+  // Auto-LOD
   if (elapsed > 50 && views.globals[GLOBAL.LOD_LEVEL] === 0) {
     views.globals[GLOBAL.LOD_LEVEL] = 1;
     pyodide.runPython('set_lod(1)');
   } else if (elapsed < 20 && views.globals[GLOBAL.LOD_LEVEL] === 1) {
-    // Re-upgrade if headroom exists
     views.globals[GLOBAL.LOD_LEVEL] = 0;
     pyodide.runPython('set_lod(0)');
   }
 }
 
-/**
- * Start the simulation loop.
- * @param {number} speed - Generations per tick (1, 5, 20, 100)
- */
 export function start(speed = 1) {
   if (!simReady) return;
   stepsPerTick = speed;
   simRunning = true;
   views.globals[GLOBAL.PAUSED] = 0;
-
-  // Run sim at ~20 ticks/sec (decoupled from 60fps render)
   if (tickInterval) clearInterval(tickInterval);
   tickInterval = setInterval(step, 50);
 }
 
-/**
- * Pause the simulation.
- */
 export function pause() {
   simRunning = false;
   views.globals[GLOBAL.PAUSED] = 1.0;
-  if (tickInterval) {
-    clearInterval(tickInterval);
-    tickInterval = null;
-  }
+  if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
 }
 
-/**
- * Toggle play/pause.
- */
 export function togglePause() {
-  if (simRunning) pause();
-  else start(stepsPerTick);
+  if (simRunning) pause(); else start(stepsPerTick);
   return simRunning;
 }
 
-/**
- * Set simulation speed.
- * @param {number} speed - Generations per tick
- */
 export function setSpeed(speed) {
   stepsPerTick = speed;
   views.globals[GLOBAL.SIM_SPEED] = speed;
   if (simRunning) {
-    // Restart interval with same timing
     clearInterval(tickInterval);
     tickInterval = setInterval(step, 50);
   }
 }
 
-/**
- * Get current generation from shared buffer.
- */
 export function getGeneration() {
   return views ? views.globals[GLOBAL.GENERATION] : 0;
 }

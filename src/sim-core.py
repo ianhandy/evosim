@@ -1,545 +1,383 @@
 """
 evosim — Python simulation core
-Runs inside Pyodide. Reads config from JS globals, writes state to SharedArrayBuffer.
+Runs inside Pyodide. All math lives here. JS never touches simulation logic.
 
-All math lives here. JS never touches simulation logic.
+Data flow:
+  Python owns all simulation state as numpy arrays.
+  At the end of each step, _sync_to_buffer() writes state into JS typed arrays
+  that share memory with the SharedArrayBuffer (via Pyodide's JsProxy).
+  JS reads the SharedArrayBuffer for rendering.
 """
 
 import json
 import math
 import random
 import numpy as np
-from js import _shared_buffer, _grid_size, _seed, _layout
 
-# ── CONSTANTS ──────────────────────────────────────────────────────────────────
+# ── READ JS GLOBALS ───────────────────────────────────────────────────────────
+
+from js import _grid_size, _seed, _species_count, _traits_per_species, _layout_json
 
 GRID_SIZE = int(_grid_size)
 G2 = GRID_SIZE * GRID_SIZE
-NUM_SPECIES = 5
-NUM_TRAITS = 6  # 5 universal + 1 species-specific
+NUM_SPECIES = int(_species_count)
+NUM_TRAITS = int(_traits_per_species)
 
-# Species indices
-VELOTHRIX = 0
-LEVIATHAN = 1
-CRAWLER = 2
-CRAB = 3
-WORM = 4
+VELOTHRIX, LEVIATHAN, CRAWLER, CRAB, WORM = 0, 1, 2, 3, 4
+T_CLUTCH, T_LONGEVITY, T_MUTATION, T_METABOLISM, T_MIGRATION, T_SPECIFIC = 0, 1, 2, 3, 4, 5
+BIOME_DEEP_WATER, BIOME_SHALLOW_MARSH, BIOME_REED_BEDS, BIOME_TIDAL_FLATS, BIOME_ROCKY_SHORE = 0, 1, 2, 3, 4
 
-SPECIES_NAMES = ['Velothrix', 'Leviathan', 'Crawler', 'Crab', 'Worm']
-
-# Trait indices
-T_CLUTCH = 0
-T_LONGEVITY = 1
-T_MUTATION = 2
-T_METABOLISM = 3
-T_MIGRATION = 4
-T_SPECIFIC = 5
-
-# Biome codes (match Uint8 values in buffer)
-BIOME_DEEP_WATER = 0
-BIOME_SHALLOW_MARSH = 1
-BIOME_REED_BEDS = 2
-BIOME_TIDAL_FLATS = 3
-BIOME_ROCKY_SHORE = 4
-
-# Season cycle (generations per full cycle)
 SEASON_PERIOD = 100
 
-# LOD level: 0 = full, 1 = simplified
-lod_level = 0
+# ── PYTHON-OWNED STATE ────────────────────────────────────────────────────────
+# These are the authoritative sim state. SharedArrayBuffer is a read-only mirror for JS.
 
-# ── SHARED BUFFER SETUP ──────────────────────────────────────────────────────
-
-# Parse layout from JS
-_layout_py = _layout.to_py()
-
-def _make_view(name, dtype):
-    info = _layout_py[name]
-    return np.frombuffer(_shared_buffer, dtype=dtype, offset=info['offset'], count=info['count'])
-
-# Create numpy views on the shared buffer
-buf_globals    = _make_view('globals', np.float64)
-buf_elevations = _make_view('elevations', np.float32)
-buf_biomes     = _make_view('biomes', np.uint8)
-buf_vegetation = _make_view('vegetation', np.float32)
-buf_populations = _make_view('populations', np.uint16).reshape((GRID_SIZE, GRID_SIZE, NUM_SPECIES))
-buf_trait_means = _make_view('traitMeans', np.float32).reshape((GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS))
-buf_trait_var   = _make_view('traitVar', np.float32).reshape((GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS))
-buf_tile_flags  = _make_view('tileFlags', np.uint8)
-buf_river_paths = _make_view('riverPaths', np.int16).reshape((-1, 2))
-buf_river_meta  = _make_view('riverMeta', np.float32).reshape((-1, 4))
-
-# Elevation and biome as 2D views
-elev_grid = buf_elevations.reshape((GRID_SIZE, GRID_SIZE))
-biome_grid = buf_biomes.reshape((GRID_SIZE, GRID_SIZE))
-veg_grid = buf_vegetation.reshape((GRID_SIZE, GRID_SIZE))
-flags_grid = buf_tile_flags.reshape((GRID_SIZE, GRID_SIZE))
-
-# ── SIMULATION STATE (Python-only, not in shared buffer) ─────────────────────
+elevations = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
+biomes     = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
+vegetation = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
+pops       = np.zeros((GRID_SIZE, GRID_SIZE, NUM_SPECIES), dtype=np.uint16)
+traits     = np.zeros((GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS), dtype=np.float32)
+trait_var  = np.zeros((GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS), dtype=np.float32)
+tile_flags = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
 
 generation = 0
-events_buffer = []  # cold data — flushed to JS on request
+lod_level = 0
+events_buffer = []
+total_deaths_last = 0
 
-# Habitat suitability per species per biome [species][biome] → 0.0–1.0
-HABITAT_SUITABILITY = np.array([
-    # deep_water  shallow_marsh  reed_beds  tidal_flats  rocky_shore
-    [0.0,         0.7,           1.0,       0.6,         0.2],   # Velothrix
-    [0.8,         1.0,           0.3,       0.5,         0.3],   # Leviathan
-    [0.0,         0.5,           1.0,       0.8,         0.3],   # Crawler
-    [0.1,         0.4,           0.5,       1.0,         0.8],   # Crab
-    [0.6,         0.8,           0.7,       0.5,         0.4],   # Worm
+# ── JS BUFFER VIEWS (for syncing) ────────────────────────────────────────────
+# These are JsProxy objects pointing to typed arrays on the SharedArrayBuffer.
+# We write to them at the end of each step via _sync_to_buffer().
+
+_js_views = {}  # populated in init_simulation()
+
+# ── ECOLOGICAL PARAMETERS ─────────────────────────────────────────────────────
+
+HABITAT_SUIT = np.array([
+    [0.0, 0.7, 1.0, 0.6, 0.2],   # Velothrix
+    [0.8, 1.0, 0.3, 0.5, 0.3],   # Leviathan
+    [0.0, 0.5, 1.0, 0.8, 0.3],   # Crawler
+    [0.1, 0.4, 0.5, 1.0, 0.8],   # Crab
+    [0.6, 0.8, 0.7, 0.5, 0.4],   # Worm
 ], dtype=np.float32)
 
-# Base carrying capacity per species (on a perfect tile)
 BASE_K = np.array([60, 45, 55, 50, 58], dtype=np.float32)
-
-# Base growth rates
-GROWTH_RATES = np.array([0.08, 0.06, 0.07, 0.065, 0.07], dtype=np.float32)
-
-# Heritability (fraction of trait variance passed to offspring)
+BASE_R = np.array([0.08, 0.06, 0.07, 0.065, 0.07], dtype=np.float32)
+VEG_REGROWTH = np.array([0.01, 0.04, 0.06, 0.03, 0.01], dtype=np.float32)
 HERITABILITY = 0.5
-
-# Base mutation step size (scaled by mutation rate trait)
 MUTATION_STEP = 0.015
 
-# Predation pairs: (predator_species, prey_species, base_attack_rate, handling_time)
-PREDATION_PAIRS = [
-    (LEVIATHAN, VELOTHRIX, 0.008, 0.1),
-    (LEVIATHAN, WORM, 0.005, 0.15),
-    (VELOTHRIX, WORM, 0.003, 0.2),
+PREDATION = [
+    (LEVIATHAN, VELOTHRIX, 0.008, 0.10),
+    (LEVIATHAN, WORM,      0.005, 0.15),
+    (VELOTHRIX, WORM,      0.003, 0.20),
 ]
 
-# Competition pairs: (species_a, species_b, competition_coefficient)
-COMPETITION_PAIRS = [
+COMPETITION = [
     (VELOTHRIX, CRAWLER, 0.0003),
-    (CRAB, CRAWLER, 0.0002),
+    (CRAB,     CRAWLER, 0.0002),
 ]
 
-# River barrier gene flow scaling
-RIVER_BARRIER_K = 0.01
 
-# ── TERRAIN GENERATION ────────────────────────────────────────────────────────
+# ── TERRAIN ───────────────────────────────────────────────────────────────────
 
-def _value_noise_2d(size, seed_val, octaves=4, persistence=0.5):
-    """Multi-octave value noise for terrain generation."""
+def _value_noise(size, seed_val, octaves=4, persistence=0.5):
     rng = np.random.RandomState(seed_val)
     result = np.zeros((size, size), dtype=np.float32)
-    amplitude = 1.0
-    total_amp = 0.0
-
-    for octave in range(octaves):
-        freq = 2 ** octave + 1
+    amp, total = 1.0, 0.0
+    for o in range(octaves):
+        freq = 2 ** o + 1
         grid = rng.rand(freq, freq).astype(np.float32)
-
-        # Bilinear interpolation to full size
-        from_r = np.linspace(0, freq - 1, size)
-        from_c = np.linspace(0, freq - 1, size)
-        r_idx = np.clip(from_r.astype(int), 0, freq - 2)
-        c_idx = np.clip(from_c.astype(int), 0, freq - 2)
-        r_frac = from_r - r_idx
-        c_frac = from_c - c_idx
-
+        xs = np.linspace(0, freq - 1, size)
+        ri = np.clip(xs.astype(int), 0, freq - 2)
+        rf = xs - ri
         interp = np.zeros((size, size), dtype=np.float32)
         for i in range(size):
             for j in range(size):
-                ri, ci = r_idx[i], c_idx[j]
-                rf, cf = r_frac[i], c_frac[j]
+                x0, y0 = int(ri[i]), int(ri[j])
+                xf, yf = rf[i], rf[j]
                 interp[i, j] = (
-                    grid[ri, ci] * (1 - rf) * (1 - cf) +
-                    grid[ri + 1, ci] * rf * (1 - cf) +
-                    grid[ri, ci + 1] * (1 - rf) * cf +
-                    grid[ri + 1, ci + 1] * rf * cf
+                    grid[x0, y0] * (1-xf) * (1-yf) +
+                    grid[x0+1, y0] * xf * (1-yf) +
+                    grid[x0, y0+1] * (1-xf) * yf +
+                    grid[x0+1, y0+1] * xf * yf
                 )
-
-        result += interp * amplitude
-        total_amp += amplitude
-        amplitude *= persistence
-
-    result /= total_amp
-    return result
+        result += interp * amp
+        total += amp
+        amp *= persistence
+    return result / total
 
 
 def _generate_terrain(seed_str):
-    """Generate elevation grid and assign biomes."""
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
     np.random.seed(seed_val % (2**31))
 
-    noise = _value_noise_2d(GRID_SIZE, seed_val)
-
-    # Island mask — lower edges to create coastline
+    noise = _value_noise(GRID_SIZE, seed_val)
     cx, cy = GRID_SIZE / 2, GRID_SIZE / 2
     max_dist = math.sqrt(cx**2 + cy**2)
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            dist = math.sqrt((r - cy)**2 + (c - cx)**2) / max_dist
-            falloff = max(0, 1 - dist * 1.4)
-            noise[r, c] *= falloff
+            d = math.sqrt((r - cy)**2 + (c - cx)**2) / max_dist
+            noise[r, c] *= max(0, 1 - d * 1.4)
 
-    # Normalize to 0–1
     lo, hi = noise.min(), noise.max()
     if hi > lo:
         noise = (noise - lo) / (hi - lo)
+    elevations[:] = noise
 
-    # Write to shared buffer
-    elev_grid[:] = noise
-
-    # Assign biomes based on elevation
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            e = elev_grid[r, c]
-            if e < 0.15:
-                biome_grid[r, c] = BIOME_DEEP_WATER
-            elif e < 0.30:
-                biome_grid[r, c] = BIOME_SHALLOW_MARSH
-            elif e < 0.50:
-                biome_grid[r, c] = BIOME_REED_BEDS
-            elif e < 0.70:
-                biome_grid[r, c] = BIOME_TIDAL_FLATS
-            else:
-                biome_grid[r, c] = BIOME_ROCKY_SHORE
+            e = elevations[r, c]
+            if   e < 0.15: biomes[r, c] = BIOME_DEEP_WATER
+            elif e < 0.30: biomes[r, c] = BIOME_SHALLOW_MARSH
+            elif e < 0.50: biomes[r, c] = BIOME_REED_BEDS
+            elif e < 0.70: biomes[r, c] = BIOME_TIDAL_FLATS
+            else:          biomes[r, c] = BIOME_ROCKY_SHORE
 
-    # Initialize vegetation based on biome
-    veg_rates = {
-        BIOME_DEEP_WATER: 0.1,
-        BIOME_SHALLOW_MARSH: 0.6,
-        BIOME_REED_BEDS: 0.9,
-        BIOME_TIDAL_FLATS: 0.5,
-        BIOME_ROCKY_SHORE: 0.2,
-    }
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            veg_grid[r, c] = veg_rates.get(biome_grid[r, c], 0.5)
+            vegetation[r, c] = min(1.0, VEG_REGROWTH[biomes[r, c]] * 10)
 
 
-# ── POPULATION INITIALIZATION ────────────────────────────────────────────────
+# ── POPULATION SEEDING ────────────────────────────────────────────────────────
 
 def _init_populations():
-    """Seed initial populations based on habitat suitability."""
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            biome = biome_grid[r, c]
+            biome = biomes[r, c]
             for s in range(NUM_SPECIES):
-                suit = HABITAT_SUITABILITY[s, biome]
-                if suit > 0.2:
-                    pop = int(BASE_K[s] * suit * 0.3 * random.uniform(0.5, 1.0))
-                    buf_populations[r, c, s] = max(0, pop)
-                else:
-                    buf_populations[r, c, s] = 0
-
-                # Initialize traits at midpoint with some variance
+                suit = HABITAT_SUIT[s, biome]
+                pops[r, c, s] = max(0, int(BASE_K[s] * suit * 0.3 * random.uniform(0.5, 1.0))) if suit > 0.2 else 0
                 for t in range(NUM_TRAITS):
-                    buf_trait_means[r, c, s, t] = 0.5 + random.uniform(-0.1, 0.1)
-                    buf_trait_var[r, c, s, t] = 0.04  # initial genetic variance
+                    traits[r, c, s, t] = 0.5 + random.uniform(-0.1, 0.1)
+                    trait_var[r, c, s, t] = 0.04
 
 
-# ── CORE SIMULATION STEP ─────────────────────────────────────────────────────
+# ── SIM STEP FUNCTIONS ────────────────────────────────────────────────────────
 
-def _get_season():
-    """Returns season factor 0–1 (0=harsh winter, 1=peak summer)."""
+def _season():
     return 0.5 + 0.5 * math.sin(2 * math.pi * generation / SEASON_PERIOD)
 
 
-def _carrying_capacity(r, c, s):
-    """Effective K for species s on tile (r,c)."""
-    biome = biome_grid[r, c]
-    suit = HABITAT_SUITABILITY[s, biome]
-    food = veg_grid[r, c]
-    season = _get_season()
-    metabolism = buf_trait_means[r, c, s, T_METABOLISM]
-
-    # Food contribution depends on diet:
-    if s == CRAWLER:
-        food_factor = food  # direct herbivore
-    elif s == CRAB:
-        food_factor = food * 0.5 + 0.3  # omnivore, less food-dependent
-    elif s == VELOTHRIX:
-        food_factor = food * 0.7 + 0.2  # invertebrates scale with vegetation
-    elif s == WORM:
-        # Detritivore — food is death, not vegetation
-        total_deaths = buf_globals[12]  # TOTAL_DEATHS
-        food_factor = min(1.0, 0.3 + total_deaths / (G2 * 5))
-    else:  # LEVIATHAN
-        # Predator — food is prey population, handled in predation
-        food_factor = 0.5  # baseline
-
-    k = BASE_K[s] * suit * (0.5 + 0.5 * food_factor) * (0.85 + 0.15 * season)
-
-    # High metabolism increases K when food is abundant, decreases when scarce
-    if food_factor > 0.5:
-        k *= (1.0 + metabolism * 0.2)
-    else:
-        k *= (1.0 - metabolism * 0.3)
-
-    return max(1, k)
+def _prob_round(x):
+    base = int(x)
+    frac = x - base
+    if frac > 0: return base + (1 if random.random() < frac else 0)
+    elif frac < 0: return base - (1 if random.random() < -frac else 0)
+    return base
 
 
-def _step_tile(r, c, season):
-    """Process one tile for one generation."""
-    total_tile_deaths = 0
+def _k(r, c, s, season):
+    biome = biomes[r, c]
+    suit = HABITAT_SUIT[s, biome]
+    if suit < 0.05: return 0
+    veg = vegetation[r, c]
+    met = traits[r, c, s, T_METABOLISM]
 
+    if   s == CRAWLER:   food = veg
+    elif s == CRAB:      food = veg * 0.4 + 0.4
+    elif s == VELOTHRIX: food = veg * 0.6 + 0.2
+    elif s == WORM:      food = min(1.0, 0.3 + total_deaths_last / max(1, G2 * 3))
+    else:                food = 0.5  # Leviathan — prey-driven
+
+    food_mod = 0.3 + 0.7 * food
+    met_amp = food_mod ** (0.7 + met * 0.6)
+    return max(1, BASE_K[s] * suit * met_amp * (0.85 + 0.15 * season))
+
+
+def _step_growth(r, c, season):
+    deaths = 0
     for s in range(NUM_SPECIES):
-        pop = int(buf_populations[r, c, s])
-        if pop <= 0:
-            buf_populations[r, c, s] = 0
+        pop = int(pops[r, c, s])
+        if pop <= 0: continue
+        k = _k(r, c, s, season)
+        if k <= 0:
+            d = _prob_round(pop * 0.1)
+            pops[r, c, s] = max(0, pop - d)
+            deaths += d
             continue
+        clutch = traits[r, c, s, T_CLUTCH]
+        longevity = traits[r, c, s, T_LONGEVITY]
+        r_eff = BASE_R[s] * (0.5 + clutch)
+        growth = r_eff * pop * (1 - pop / k)
+        mort = 0.02 + 0.08 * (1 - longevity)
+        d = _prob_round(pop * mort)
+        new_pop = max(0, min(65535, pop + _prob_round(growth) - d))
+        deaths += d + max(0, pop - new_pop + d)
+        pops[r, c, s] = new_pop
+    return deaths
 
-        k = _carrying_capacity(r, c, s)
 
-        # ── Logistic growth ──
-        clutch = buf_trait_means[r, c, s, T_CLUTCH]
-        longevity = buf_trait_means[r, c, s, T_LONGEVITY]
+def _step_predation(r, c):
+    deaths = 0
+    for pred, prey, base_atk, h_time in PREDATION:
+        pp = int(pops[r, c, pred])
+        qp = int(pops[r, c, prey])
+        if pp <= 0 or qp <= 0: continue
+        atk = base_atk
+        if pred == LEVIATHAN: atk *= (0.5 + traits[r, c, LEVIATHAN, T_SPECIFIC])
+        if prey == VELOTHRIX: atk *= (0.7 + 0.6 * traits[r, c, VELOTHRIX, T_SPECIFIC])
+        elif prey == WORM: atk *= (0.7 + 0.6 * traits[r, c, WORM, T_SPECIFIC])
+        if prey == CRAWLER: atk *= (1.0 - traits[r, c, CRAWLER, T_SPECIFIC] * 0.6)
+        ks = 1.0
+        if prey == CRAB: ks = 1.0 - traits[r, c, CRAB, T_SPECIFIC] * 0.5
+        kills = atk * pp * qp / (1 + h_time * qp)
+        kills = _prob_round(min(kills * ks, qp * 0.5))
+        pops[r, c, prey] = max(0, qp - kills)
+        deaths += kills
+    return deaths
 
-        # Clutch size scales reproduction rate
-        effective_r = GROWTH_RATES[s] * (0.5 + clutch)
 
-        # Growth: logistic with carrying capacity
-        growth = effective_r * pop * (1 - pop / k)
-
-        # Longevity affects mortality — longer-lived = lower baseline death rate
-        # But long-lived individuals keep consuming resources
-        mortality_rate = 0.02 + 0.08 * (1 - longevity)  # 2–10% baseline mortality
-        deaths = int(pop * mortality_rate)
-
-        # Net population change
-        new_pop = pop + _prob_round(growth) - deaths
-        new_pop = max(0, min(65535, new_pop))  # Uint16 cap
-
-        total_tile_deaths += max(0, pop - new_pop) if new_pop < pop else deaths
-
-        buf_populations[r, c, s] = new_pop
-
-    # ── Predation (Lotka-Volterra with Holling Type II) ──
-    for pred_s, prey_s, base_attack, handling_time in PREDATION_PAIRS:
-        pred_pop = int(buf_populations[r, c, pred_s])
-        prey_pop = int(buf_populations[r, c, prey_s])
-        if pred_pop <= 0 or prey_pop <= 0:
-            continue
-
-        # Attack rate modified by hunting range (Leviathan) or species-specific trait
-        attack_mod = 1.0
-        if pred_s == LEVIATHAN:
-            attack_mod = 0.5 + buf_trait_means[r, c, pred_s, T_SPECIFIC]  # hunting range
-
-        # Prey defense modifiers
-        defense_mod = 1.0
-        if prey_s == WORM:
-            # Glow attracts predators (higher glow = easier to find)
-            defense_mod = 0.7 + 0.6 * buf_trait_means[r, c, prey_s, T_SPECIFIC]
-        elif prey_s == VELOTHRIX:
-            # Crest brightness attracts predators
-            defense_mod = 0.7 + 0.6 * buf_trait_means[r, c, prey_s, T_SPECIFIC]
-
-        # Crawler: burrowing depth reduces encounter rate
-        if prey_s == CRAWLER:
-            burrow = buf_trait_means[r, c, CRAWLER, T_SPECIFIC]
-            defense_mod *= (1.0 - burrow * 0.6)
-
-        # Crab: shell thickness reduces kill success
-        if prey_s == CRAB:
-            shell = buf_trait_means[r, c, CRAB, T_SPECIFIC]
-            defense_mod *= (1.0 - shell * 0.5)
-
-        # Holling Type II functional response
-        effective_attack = base_attack * attack_mod * defense_mod
-        prey_killed = effective_attack * pred_pop * prey_pop / (1 + handling_time * prey_pop)
-        prey_killed = _prob_round(min(prey_killed, prey_pop * 0.5))  # cap at 50% per gen
-
-        buf_populations[r, c, prey_s] = max(0, int(buf_populations[r, c, prey_s]) - prey_killed)
-        total_tile_deaths += prey_killed
-
-    # ── Competition ──
-    for sa, sb, coeff in COMPETITION_PAIRS:
-        pa = int(buf_populations[r, c, sa])
-        pb = int(buf_populations[r, c, sb])
+def _step_competition(r, c):
+    deaths = 0
+    for sa, sb, coeff in COMPETITION:
+        pa, pb = int(pops[r, c, sa]), int(pops[r, c, sb])
         if pa > 0 and pb > 0:
-            loss_a = _prob_round(coeff * pa * pb)
-            loss_b = _prob_round(coeff * pa * pb)
-            buf_populations[r, c, sa] = max(0, pa - loss_a)
-            buf_populations[r, c, sb] = max(0, pb - loss_b)
-            total_tile_deaths += loss_a + loss_b
+            la = _prob_round(coeff * pa * pb)
+            lb = _prob_round(coeff * pa * pb)
+            pops[r, c, sa] = max(0, pa - la)
+            pops[r, c, sb] = max(0, pb - lb)
+            deaths += la + lb
+    return deaths
 
-    # ── Vegetation consumption ──
-    total_herbivore_demand = 0
+
+def _step_vegetation(r, c, season):
     for s in [CRAWLER, CRAB, VELOTHRIX]:
-        pop = int(buf_populations[r, c, s])
-        if pop <= 0:
-            continue
-        metabolism = buf_trait_means[r, c, s, T_METABOLISM]
-        rate = 0.001 * (0.5 + metabolism)
-        if s == CRAB:
-            rate *= 0.3  # omnivore, eats less vegetation
-        elif s == VELOTHRIX:
-            rate *= 0.5  # eats invertebrates, indirect veg impact
-        total_herbivore_demand += rate * pop
+        pop = int(pops[r, c, s])
+        if pop <= 0: continue
+        met = traits[r, c, s, T_METABOLISM]
+        rate = 0.001 * (0.5 + met)
+        if s == CRAB: rate *= 0.3
+        elif s == VELOTHRIX: rate *= 0.5
+        vegetation[r, c] -= rate * pop
+    biome = biomes[r, c]
+    vegetation[r, c] += VEG_REGROWTH[biome] * (1 - vegetation[r, c]) * season
+    vegetation[r, c] = max(0.0, min(1.0, float(vegetation[r, c])))
 
-    veg_grid[r, c] = max(0, veg_grid[r, c] - total_herbivore_demand)
 
-    # ── Vegetation regrowth ──
-    biome = biome_grid[r, c]
-    regrowth_base = [0.01, 0.04, 0.06, 0.03, 0.01][biome]
-    veg_grid[r, c] += regrowth_base * (1 - veg_grid[r, c]) * season
-    veg_grid[r, c] = min(1.0, max(0.0, veg_grid[r, c]))
-
-    # ── Trait evolution ──
+def _step_traits(r, c):
     for s in range(NUM_SPECIES):
-        pop = int(buf_populations[r, c, s])
-        if pop < 2:
-            continue
-
-        mutation_rate_trait = buf_trait_means[r, c, s, T_MUTATION]
-        effective_mutation = 0.001 + mutation_rate_trait * 0.049  # maps 0–1 → 0.001–0.05
-
+        pop = int(pops[r, c, s])
+        if pop < 2: continue
+        mut = 0.001 + traits[r, c, s, T_MUTATION] * 0.049
         for t in range(NUM_TRAITS):
-            mean = buf_trait_means[r, c, s, t]
-            var = buf_trait_var[r, c, s, t]
-
-            # Mutation: add variance proportional to mutation rate
-            var += effective_mutation * MUTATION_STEP
-
-            # Drift: variance from finite population
-            drift_var = mean * (1 - mean) / (2 * pop) if pop > 0 else 0
-            mean += random.gauss(0, math.sqrt(drift_var + 1e-10))
-
-            # Clamp to valid range
-            mean = max(0.001, min(0.999, mean))
-            var = max(0.001, min(0.25, var))
-
-            buf_trait_means[r, c, s, t] = mean
-            buf_trait_var[r, c, s, t] = var
-
-    return total_tile_deaths
+            mean = float(traits[r, c, s, t])
+            var = float(trait_var[r, c, s, t])
+            drift_v = mean * (1 - mean) / (2 * pop)
+            mean += random.gauss(0, math.sqrt(max(0, drift_v)))
+            var += mut * MUTATION_STEP
+            var *= 0.99
+            traits[r, c, s, t] = max(0.001, min(0.999, mean))
+            trait_var[r, c, s, t] = max(0.001, min(0.25, var))
 
 
 def _step_migration():
-    """Move individuals between adjacent tiles based on migration tendency."""
-    # Work on a snapshot to avoid order-dependent artifacts
-    pop_snapshot = np.array(buf_populations, dtype=np.int32)
-
+    snap = np.array(pops, dtype=np.int32)
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             for s in range(NUM_SPECIES):
-                pop = pop_snapshot[r, c, s]
-                if pop < 5:
-                    continue
-
-                migration_trait = buf_trait_means[r, c, s, T_MIGRATION]
-                base_migration = 0.02 + migration_trait * 0.08  # 2–10% migrate
-
-                # Shell thickness slows crab migration
-                if s == CRAB:
-                    shell = buf_trait_means[r, c, s, T_SPECIFIC]
-                    base_migration *= (1 - shell * 0.4)
-
-                migrants = _prob_round(pop * base_migration)
-                if migrants <= 0:
-                    continue
-
-                # Distribute to valid neighbors
-                neighbors = []
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr, c + dc
+                pop = int(snap[r, c, s])
+                if pop < 5: continue
+                mig = traits[r, c, s, T_MIGRATION]
+                rate = 0.02 + mig * 0.08
+                if s == CRAB: rate *= (1 - traits[r, c, s, T_SPECIFIC] * 0.4)
+                migrants = _prob_round(pop * rate)
+                if migrants <= 0: continue
+                nbrs = []
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
                     if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
-                        suit = HABITAT_SUITABILITY[s, biome_grid[nr, nc]]
+                        suit = HABITAT_SUIT[s, biomes[nr, nc]]
                         if suit > 0.1:
-                            # River barrier
-                            barrier = 1.0
-                            if flags_grid[r, c] & 1 or flags_grid[nr, nc] & 1:
-                                barrier = 0.3  # simplified river barrier
-                            neighbors.append((nr, nc, suit * barrier))
-
-                if not neighbors:
-                    continue
-
-                total_weight = sum(w for _, _, w in neighbors)
-                per_neighbor = migrants / len(neighbors)
-
-                for nr, nc, w in neighbors:
-                    moved = _prob_round(per_neighbor * w / (total_weight / len(neighbors)))
-                    moved = min(moved, int(buf_populations[r, c, s]))
-                    if moved <= 0:
-                        continue
-
-                    buf_populations[r, c, s] = max(0, int(buf_populations[r, c, s]) - moved)
-                    buf_populations[nr, nc, s] = min(65535, int(buf_populations[nr, nc, s]) + moved)
-
-                    # Blend traits via migration
-                    src_pop = max(1, int(buf_populations[r, c, s]))
-                    dst_pop = max(1, int(buf_populations[nr, nc, s]))
-                    m_frac = moved / dst_pop
+                            bar = 0.3 if (tile_flags[r,c] & 1 or tile_flags[nr,nc] & 1) else 1.0
+                            nbrs.append((nr, nc, suit * bar))
+                if not nbrs: continue
+                tw = sum(w for _,_,w in nbrs)
+                for nr, nc, w in nbrs:
+                    moved = _prob_round(migrants * w / tw)
+                    moved = min(moved, int(pops[r, c, s]))
+                    if moved <= 0: continue
+                    pops[r, c, s] = max(0, int(pops[r, c, s]) - moved)
+                    pops[nr, nc, s] = min(65535, int(pops[nr, nc, s]) + moved)
+                    dp = max(1, int(pops[nr, nc, s]))
+                    frac = moved / dp
                     for t in range(NUM_TRAITS):
-                        src_mean = buf_trait_means[r, c, s, t]
-                        dst_mean = buf_trait_means[nr, nc, s, t]
-                        buf_trait_means[nr, nc, s, t] = (1 - m_frac) * dst_mean + m_frac * src_mean
+                        traits[nr, nc, s, t] = (1-frac) * traits[nr, nc, s, t] + frac * traits[r, c, s, t]
 
 
-def _prob_round(x):
-    """Probabilistic rounding: 3.7 → 4 with 70% chance, 3 with 30% chance."""
-    base = int(x)
-    frac = x - base
-    return base + (1 if random.random() < frac else 0)
+# ── BUFFER SYNC ───────────────────────────────────────────────────────────────
 
+def _sync_to_buffer():
+    """
+    Write Python-owned state into JS typed arrays on the SharedArrayBuffer.
+    This is the ONLY place Python writes to JS memory.
+    Called once at the end of each step_simulation() batch.
 
-# ── GLOBAL STATE UPDATE ──────────────────────────────────────────────────────
+    Uses Pyodide's JsProxy.assign() or element-by-element as fallback.
+    Each typed array write goes directly to SharedArrayBuffer memory.
+    """
+    from js import _js_globals, _js_elevations, _js_biomes, _js_vegetation
+    from js import _js_populations, _js_trait_means, _js_trait_var, _js_tile_flags
+    from pyodide.ffi import to_js
 
-def _update_globals():
-    """Write summary stats to globals section of shared buffer."""
-    buf_globals[0] = generation  # GENERATION
-    buf_globals[1] = _get_season()  # SEASON_FACTOR
-
-    total_deaths = 0
+    # Globals (small — element access is fine)
+    _js_globals[0] = float(generation)
+    _js_globals[1] = _season()
     for s in range(NUM_SPECIES):
-        total = int(np.sum(buf_populations[:, :, s]))
-        buf_globals[6 + s] = total  # TOTAL_POP_0..4
+        _js_globals[6 + s] = float(np.sum(pops[:, :, s]))
+    _js_globals[12] = float(total_deaths_last)
+    _js_globals[13] = float(np.mean(vegetation))
 
-    buf_globals[13] = float(np.mean(veg_grid))  # VEGETATION_MEAN
+    # Grid data — use .set() with a JS typed array created from numpy
+    # to_js converts numpy arrays to JS typed arrays efficiently
+    _js_elevations.set(to_js(elevations.ravel()))
+    _js_biomes.set(to_js(biomes.ravel()))
+    _js_vegetation.set(to_js(vegetation.ravel()))
+    _js_populations.set(to_js(pops.ravel().astype(np.uint16)))
+    _js_trait_means.set(to_js(traits.ravel()))
+    _js_trait_var.set(to_js(trait_var.ravel()))
+    _js_tile_flags.set(to_js(tile_flags.ravel()))
 
 
 # ── PUBLIC API ────────────────────────────────────────────────────────────────
 
 def init_simulation():
-    """Called once at startup. Generates terrain, seeds populations."""
     global generation
     generation = 0
     _generate_terrain(str(_seed))
     _init_populations()
-    _update_globals()
+    _sync_to_buffer()
 
 
 def step_simulation(n=1):
-    """Advance the simulation by n generations."""
-    global generation
-
+    global generation, total_deaths_last
     for _ in range(n):
         generation += 1
-        season = _get_season()
-        total_deaths = 0
-
+        season = _season()
+        td = 0
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
-                total_deaths += _step_tile(r, c, season)
-
-        buf_globals[12] = total_deaths  # TOTAL_DEATHS for detritus calc
-
+                td += _step_growth(r, c, season)
+                td += _step_predation(r, c)
+                td += _step_competition(r, c)
+                _step_vegetation(r, c, season)
+                _step_traits(r, c)
+        total_deaths_last = td
         if lod_level == 0:
             _step_migration()
-        else:
-            # Simplified: only migrate every 5th gen
-            if generation % 5 == 0:
-                _step_migration()
-
-        _update_globals()
+        elif generation % 5 == 0:
+            _step_migration()
+    _sync_to_buffer()
 
 
 def flush_events():
-    """Return queued events as JSON and clear the buffer."""
     global events_buffer
-    result = json.dumps(events_buffer)
+    out = json.dumps(events_buffer)
     events_buffer = []
-    return result
+    return out
 
 
 def set_lod(level):
-    """Set level of detail. 0 = full, 1 = simplified."""
     global lod_level
     lod_level = level
