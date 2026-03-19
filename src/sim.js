@@ -159,3 +159,48 @@ export function setSpeed(speed) {
 export function getGeneration() {
   return views ? views.globals[GLOBAL.GENERATION] : 0;
 }
+
+/**
+ * Save simulation state to localStorage.
+ */
+export function saveGame() {
+  if (!simReady) return false;
+  try {
+    const stateJson = pyodide.runPython('get_save_state()');
+    localStorage.setItem('evosim-save', stateJson);
+    return true;
+  } catch (e) {
+    console.error('Save failed:', e);
+    return false;
+  }
+}
+
+/**
+ * Load simulation state from localStorage.
+ */
+export function loadGame() {
+  if (!simReady) return false;
+  try {
+    const stateJson = localStorage.getItem('evosim-save');
+    if (!stateJson) return false;
+    pyodide.runPython(`load_save_state('''${stateJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}''')`);
+    return true;
+  } catch (e) {
+    console.error('Load failed:', e);
+    return false;
+  }
+}
+
+/**
+ * Check if a save exists.
+ */
+export function hasSave() {
+  return !!localStorage.getItem('evosim-save');
+}
+
+/**
+ * Delete save.
+ */
+export function deleteSave() {
+  localStorage.removeItem('evosim-save');
+}

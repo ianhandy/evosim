@@ -957,3 +957,78 @@ def flush_events():
 def set_lod(level):
     global lod_level
     lod_level = level
+
+
+def get_save_state():
+    """Serialize full simulation state to JSON for localStorage save."""
+    state = {
+        'version': 1,
+        'generation': generation,
+        'grid_size': GRID_SIZE,
+        'seed': str(_seed),
+        'lod_level': lod_level,
+        'elevations': elevations.ravel().tolist(),
+        'biomes': biomes.ravel().tolist(),
+        'vegetation': vegetation.ravel().tolist(),
+        'populations': pops.ravel().tolist(),
+        'traits': traits.ravel().tolist(),
+        'trait_var': trait_var.ravel().tolist(),
+        'tile_flags': tile_flags.ravel().tolist(),
+        'species_alive': species_alive,
+        'peak_pops': peak_pops,
+        'speciation_detected': speciation_detected,
+        'current_epoch': current_epoch,
+        'epoch_since': epoch_since,
+        'extinctions': extinctions,
+        'rivers': [{'id': r['id'], 'path': r['path'], 'age': r['age'],
+                     'width': r['width'], 'active': r['active']} for r in rivers],
+    }
+    return json.dumps(state)
+
+
+def load_save_state(state_json):
+    """Restore simulation state from JSON."""
+    global generation, lod_level, species_alive, peak_pops
+    global speciation_detected, speciation_gens, current_epoch, epoch_since
+    global extinctions, rivers, _next_river_id, first_seen_gen
+
+    state = json.loads(state_json)
+    if state.get('version') != 1:
+        return
+
+    generation = state['generation']
+    lod_level = state.get('lod_level', 0)
+
+    elevations[:] = np.array(state['elevations'], dtype=np.float32).reshape(GRID_SIZE, GRID_SIZE)
+    biomes[:] = np.array(state['biomes'], dtype=np.uint8).reshape(GRID_SIZE, GRID_SIZE)
+    vegetation[:] = np.array(state['vegetation'], dtype=np.float32).reshape(GRID_SIZE, GRID_SIZE)
+    pops[:] = np.array(state['populations'], dtype=np.uint16).reshape(GRID_SIZE, GRID_SIZE, NUM_SPECIES)
+    traits[:] = np.array(state['traits'], dtype=np.float32).reshape(GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS)
+    trait_var[:] = np.array(state['trait_var'], dtype=np.float32).reshape(GRID_SIZE, GRID_SIZE, NUM_SPECIES, NUM_TRAITS)
+    tile_flags[:] = np.array(state['tile_flags'], dtype=np.uint8).reshape(GRID_SIZE, GRID_SIZE)
+
+    species_alive = state.get('species_alive', [True] * NUM_SPECIES)
+    peak_pops = state.get('peak_pops', [0] * NUM_SPECIES)
+    speciation_detected = state.get('speciation_detected', [False] * NUM_SPECIES)
+    speciation_gens = [0] * NUM_SPECIES
+    current_epoch = state.get('current_epoch', 'the_quiet')
+    epoch_since = state.get('epoch_since', 0)
+    extinctions = state.get('extinctions', [])
+    first_seen_gen = [0] * NUM_SPECIES
+
+    # Restore rivers
+    rivers.clear()
+    for rd in state.get('rivers', []):
+        rivers.append({
+            'id': rd['id'],
+            'path': [tuple(p) for p in rd['path']],
+            'path_set': {tuple(p) for p in rd['path']},
+            'age': rd['age'],
+            'width': rd['width'],
+            'active': rd['active'],
+            'stall_gens': 0,
+        })
+    _next_river_id = max((r['id'] for r in rivers), default=-1) + 1
+
+    _sync_to_buffer()
+    _sync_rivers_to_buffer()

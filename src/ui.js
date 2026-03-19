@@ -772,6 +772,55 @@ function populateThemes() {
 populateThemes();
 themeSelect.addEventListener('change', (e) => setTheme(e.target.value));
 
+// ── Save/Load ──
+const btnSave = $('btn-save');
+const btnLoadSave = $('btn-load-save');
+
+btnSave.addEventListener('click', () => {
+  if (sim.saveGame()) {
+    btnSave.textContent = 'Saved ✓';
+    setTimeout(() => { btnSave.textContent = 'Save'; }, 1500);
+  }
+});
+
+// Show "Resume" button on setup screen if save exists
+if (sim.hasSave()) {
+  btnLoadSave.style.display = '';
+}
+
+btnLoadSave.addEventListener('click', async () => {
+  setup.classList.add('hidden');
+  loader.classList.remove('hidden');
+  loaderFill.style.width = '0%';
+
+  // Need to parse the save to get grid size
+  const saveData = JSON.parse(localStorage.getItem('evosim-save') || '{}');
+  const savedGridSize = saveData.grid_size || 12;
+
+  try {
+    await sim.init(savedGridSize, saveData.seed || 'LOAD', (phase, pct) => {
+      loaderMsg.textContent = {
+        pyodide: 'Downloading Python runtime...',
+        numpy: 'Loading numpy...',
+        buffer: 'Allocating shared memory...',
+        sim: 'Initializing simulation...',
+        init: 'Restoring saved state...',
+        ready: 'Ready.',
+      }[phase] || phase;
+      loaderFill.style.width = pct + '%';
+    });
+
+    sim.loadGame();
+    loader.classList.add('hidden');
+    app.classList.remove('hidden');
+    resizeCanvases();
+    startRenderLoop();
+  } catch (err) {
+    loaderMsg.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+});
+
 // ── Init ──
 const savedTheme = loadSavedTheme();
 themeSelect.value = savedTheme;
