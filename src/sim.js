@@ -39,12 +39,19 @@ export async function init(gridSize, seed, onProgress) {
 
   onProgress?.('buffer', 60);
 
-  // Create layout and shared buffer
+  // Create layout and buffer
+  // Try SharedArrayBuffer first (needs COOP/COEP + secure context).
+  // Fall back to ArrayBuffer — works identically since sim and renderer
+  // are in the same thread. SAB only matters if we move sim to a Worker.
   layout = createLayout(gridSize);
-  sharedBuffer = new SharedArrayBuffer(layout.totalBytes);
+  try {
+    sharedBuffer = new SharedArrayBuffer(layout.totalBytes);
+    console.log('Using SharedArrayBuffer');
+  } catch {
+    sharedBuffer = new ArrayBuffer(layout.totalBytes);
+    console.log('SharedArrayBuffer unavailable, using ArrayBuffer');
+  }
   views = createViews(sharedBuffer, layout);
-
-  // Zero the buffer
   new Uint8Array(sharedBuffer).fill(0);
 
   onProgress?.('sim', 70);
