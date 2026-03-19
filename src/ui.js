@@ -181,15 +181,8 @@ $('btn-begin').addEventListener('click', async () => {
     loader.classList.add('hidden');
     app.classList.remove('hidden');
 
-    // Initialize WebGL renderer
-    mapRenderer = new MapRenderer(mapCanvas);
-    if (!mapRenderer.fallback) {
-      mapRenderer.setup(gridSize);
-      console.log('WebGL map renderer initialized');
-    } else {
-      console.log('Using Canvas 2D map fallback');
-      mapRenderer = null;
-    }
+    // Canvas 2D renderer (WebGL upgrade deferred until shader geometry is correct)
+    mapRenderer = null;
 
     resizeCanvases();
     startRenderLoop();
@@ -416,58 +409,60 @@ function renderMap(views) {
   const offsetX = w / 2 + camPanX;
   const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
 
-  // Deep baseline — well below the lowest possible tile, extends past viewport bottom
-  const deepBase = offsetY + gs * tileH + heightScale;
+  // Water level — all water tiles render at this fixed elevation
+  // Land tiles render at their actual elevation (always >= water level)
+  const WATER_LEVEL = 0.18;
+
+  // Global floor — the bottom of ALL pillars. Every tile extends to the same depth.
+  // This is the isometric Y position of the deepest point.
+  const floorIsoY = offsetY + (gs - 1 + gs - 1) * (tileH * 0.5) + heightScale * 0.6;
 
   const BIOME_COLORS = getBiomeColors();
 
-  // Helper: isometric position for a tile
-  function tilePos(r, c) {
-    const elev = views.elevations[r * gs + c];
+  // Helper: isometric screen position for grid coordinates at a given elevation
+  function isoXY(r, c, elev) {
     const ix = (c - r) * (tileW * 0.5);
     const iy = (c + r) * (tileH * 0.5);
     const iz = elev * heightScale;
-    return { x: offsetX + ix, y: offsetY + iy - iz, elev };
+    return { x: offsetX + ix, y: offsetY + iy - iz };
   }
 
-  // Helper: tile color from biome + elevation
-  function tileColor(idx) {
-    const elev = views.elevations[idx];
-    const biome = views.biomes[idx];
-    const bc = BIOME_COLORS[biome] || [30, 20, 10];
-    return {
-      r: bc[0] + elev * 30,
-      g: bc[1] + elev * 20,
-      b: bc[2] + elev * 15,
-      biome,
-    };
-  }
-
-  // Draw back-to-front (painter's algorithm)
+  // Pass 1: Draw all tile pillars and land top faces (back-to-front)
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
       const idx = r * gs + c;
-      const { x: sx, y: sy, elev } = tilePos(r, c);
-      const { r: tr, g: tg, b: tb, biome } = tileColor(idx);
+      const rawElev = views.elevations[idx];
+      const biome = views.biomes[idx];
+      const isWater = biome <= 1; // deep_water or shallow_marsh
 
-      // Directional shade from neighbor elevation differences
+      // Land renders at actual elevation; water terrain renders below water level
+      const surfaceElev = isWater ? WATER_LEVEL : Math.max(WATER_LEVEL, rawElev);
+
+      const bc = BIOME_COLORS[biome] || [30, 20, 10];
+      // Color based on raw elevation for terrain variety even underwater
+      let tr = bc[0] + rawElev * 30;
+      let tg = bc[1] + rawElev * 20;
+      let tb = bc[2] + rawElev * 15;
+
+      // Directional shade
       let shade = 0.65;
       if (r > 0 && c > 0) {
         const hL = views.elevations[r * gs + (c - 1)];
         const hU = views.elevations[(r - 1) * gs + c];
-        shade = 0.5 + 0.5 * Math.max(0, Math.min(1, 0.5 + (elev - hL) * 2 + (elev - hU) * 1.5));
+        shade = 0.5 + 0.5 * Math.max(0, Math.min(1, 0.5 + (rawElev - hL) * 2 + (rawElev - hU) * 1.5));
       }
 
-      // Diamond points
-      const top =    { x: sx,              y: sy - tileH * 0.5 };
-      const right =  { x: sx + tileW * 0.5, y: sy };
-      const bottom = { x: sx,              y: sy + tileH * 0.5 };
-      const left =   { x: sx - tileW * 0.5, y: sy };
+      // Diamond points at surface elevation
+      const ctr = isoXY(r, c, surfaceElev);
+      const top    = { x: ctr.x,               y: ctr.y - tileH * 0.5 };
+      const right  = { x: ctr.x + tileW * 0.5, y: ctr.y };
+      const bottom = { x: ctr.x,               y: ctr.y + tileH * 0.5 };
+      const left   = { x: ctr.x - tileW * 0.5, y: ctr.y };
 
-      // Pillar height — all tiles extend to deep baseline
-      const pillarH = deepBase - bottom.y;
+      // Pillar: extends from bottom diamond point down to global floor
+      const pillarH = floorIsoY - bottom.y;
 
-      // ── RIGHT FACE (SE-facing, lighter shade) ──
+      // ── RIGHT FACE (SE-facing) ──
       if (pillarH > 0) {
         ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
         ctx.beginPath();
@@ -478,7 +473,7 @@ function renderMap(views) {
         ctx.fill();
       }
 
-      // ── LEFT FACE (SW-facing, darkest) ──
+      // ── LEFT FACE (SW-facing) ──
       if (pillarH > 0) {
         ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
         ctx.beginPath();
@@ -489,8 +484,101 @@ function renderMap(views) {
         ctx.fill();
       }
 
-      // ── TOP FACE ──
-      ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
+      // ── TOP FACE (terrain surface — NOT water) ──
+      if (!isWater) {
+        ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        // Underwater terrain — darker, muted
+        ctx.fillStyle = `rgb(${tr * shade * 0.4 | 0},${tg * shade * 0.4 | 0},${tb * shade * 0.5 | 0})`;
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // River flag on terrain
+      if (views.tileFlags[idx] & 1 && !isWater) {
+        ctx.fillStyle = 'rgba(25, 80, 140, 0.4)';
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Volcanic flag (bit 1) — orange glow
+      if (views.tileFlags[idx] & 2) {
+        ctx.fillStyle = 'rgba(229, 89, 28, 0.3)';
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.lineTo(bottom.x, bottom.y);
+        ctx.lineTo(left.x, left.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Species population overlay (on land only)
+      if (!isWater) {
+        let maxPop = 0, maxS = -1;
+        for (let s = 0; s < 5; s++) {
+          const p = views.populations[idx * 5 + s];
+          if (p > maxPop) { maxPop = p; maxS = s; }
+        }
+        if (maxPop > 5 && maxS >= 0) {
+          const intensity = Math.min(0.45, maxPop / 250);
+          ctx.fillStyle = hexToRgba(SPECIES_COLORS[maxS], intensity);
+          ctx.beginPath();
+          ctx.moveTo(top.x, top.y);
+          ctx.lineTo(right.x, right.y);
+          ctx.lineTo(bottom.x, bottom.y);
+          ctx.lineTo(left.x, left.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // Grid line
+      ctx.strokeStyle = 'rgba(221,193,101,0.05)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.lineTo(bottom.x, bottom.y);
+      ctx.lineTo(left.x, left.y);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
+  // Pass 2: Water layer — drawn on top at fixed water level elevation
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      const idx = r * gs + c;
+      const biome = views.biomes[idx];
+      if (biome > 1) continue; // only water tiles
+
+      const ctr = isoXY(r, c, WATER_LEVEL);
+      const top    = { x: ctr.x,               y: ctr.y - tileH * 0.5 };
+      const right  = { x: ctr.x + tileW * 0.5, y: ctr.y };
+      const bottom = { x: ctr.x,               y: ctr.y + tileH * 0.5 };
+      const left   = { x: ctr.x - tileW * 0.5, y: ctr.y };
+
+      // Water surface — semi-transparent blue
+      const depth = biome === 0 ? 0.55 : 0.35; // deep water more opaque
+      ctx.fillStyle = `rgba(15, 50, 90, ${depth})`;
       ctx.beginPath();
       ctx.moveTo(top.x, top.y);
       ctx.lineTo(right.x, right.y);
@@ -499,38 +587,18 @@ function renderMap(views) {
       ctx.closePath();
       ctx.fill();
 
-      // Water shimmer
-      if (biome <= 1) {
-        ctx.fillStyle = getWaterColor();
-        ctx.beginPath();
-        ctx.moveTo(top.x, top.y);
-        ctx.lineTo(right.x, right.y);
-        ctx.lineTo(bottom.x, bottom.y);
-        ctx.lineTo(left.x, left.y);
-        ctx.closePath();
-        ctx.fill();
-      }
+      // Shimmer highlight
+      ctx.fillStyle = `rgba(60, 120, 180, ${depth * 0.15})`;
+      ctx.fill();
 
-      // River flag — draw river fill on top face
-      if (views.tileFlags[idx] & 1) {
-        ctx.fillStyle = 'rgba(25, 80, 140, 0.45)';
-        ctx.beginPath();
-        ctx.moveTo(top.x, top.y);
-        ctx.lineTo(right.x, right.y);
-        ctx.lineTo(bottom.x, bottom.y);
-        ctx.lineTo(left.x, left.y);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      // Species population overlay
+      // Species on water tiles
       let maxPop = 0, maxS = -1;
       for (let s = 0; s < 5; s++) {
         const p = views.populations[idx * 5 + s];
         if (p > maxPop) { maxPop = p; maxS = s; }
       }
       if (maxPop > 5 && maxS >= 0) {
-        const intensity = Math.min(0.45, maxPop / 250);
+        const intensity = Math.min(0.35, maxPop / 300);
         ctx.fillStyle = hexToRgba(SPECIES_COLORS[maxS], intensity);
         ctx.beginPath();
         ctx.moveTo(top.x, top.y);
@@ -540,17 +608,6 @@ function renderMap(views) {
         ctx.closePath();
         ctx.fill();
       }
-
-      // Grid line
-      ctx.strokeStyle = 'rgba(221,193,101,0.06)';
-      ctx.lineWidth = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(top.x, top.y);
-      ctx.lineTo(right.x, right.y);
-      ctx.lineTo(bottom.x, bottom.y);
-      ctx.lineTo(left.x, left.y);
-      ctx.closePath();
-      ctx.stroke();
     }
   }
 
@@ -1302,12 +1359,7 @@ btnLoadSave.addEventListener('click', async () => {
     loader.classList.add('hidden');
     app.classList.remove('hidden');
 
-    mapRenderer = new MapRenderer(mapCanvas);
-    if (!mapRenderer.fallback) {
-      mapRenderer.setup(savedGridSize);
-    } else {
-      mapRenderer = null;
-    }
+    mapRenderer = null;
 
     resizeCanvases();
     startRenderLoop();
