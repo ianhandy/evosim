@@ -25,7 +25,7 @@ const mapCanvas = $('map-canvas');
 const popChart = $('pop-chart');
 const pentagonChart = $('pentagon-chart');
 
-let gridSize = 12;
+let gridSize = 32;
 let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
@@ -413,9 +413,10 @@ function renderMap(views) {
   // Land tiles render at their actual elevation (always >= water level)
   const WATER_LEVEL = 0.18;
 
-  // Global floor — the bottom of ALL pillars. Every tile extends to the same depth.
-  // This is the isometric Y position of the deepest point.
-  const floorIsoY = offsetY + (gs - 1 + gs - 1) * (tileH * 0.5) + heightScale * 0.6;
+  // Floor elevation — all pillars extend down to this elevation (below the terrain).
+  // In isometric view, the floor is itself an isometric plane at elevation 0,
+  // so each tile's pillar bottom is at that tile's iso position at elev=0.
+  const FLOOR_ELEV = -0.15; // slightly below zero so even the lowest tiles have visible sides
 
   const BIOME_COLORS = getBiomeColors();
 
@@ -459,30 +460,30 @@ function renderMap(views) {
       const bottom = { x: ctr.x,               y: ctr.y + tileH * 0.5 };
       const left   = { x: ctr.x - tileW * 0.5, y: ctr.y };
 
-      // Pillar: extends from bottom diamond point down to global floor
-      const pillarH = floorIsoY - bottom.y;
+      // Floor diamond — same tile grid position but at floor elevation
+      // This creates an isometric floor plane, not a flat horizontal line
+      const flr = isoXY(r, c, FLOOR_ELEV);
+      const flrRight  = { x: flr.x + tileW * 0.5, y: flr.y };
+      const flrBottom = { x: flr.x,               y: flr.y + tileH * 0.5 };
+      const flrLeft   = { x: flr.x - tileW * 0.5, y: flr.y };
 
       // ── RIGHT FACE (SE-facing) ──
-      if (pillarH > 0) {
-        ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
-        ctx.beginPath();
-        ctx.moveTo(right.x, right.y);
-        ctx.lineTo(bottom.x, bottom.y);
-        ctx.lineTo(bottom.x, bottom.y + pillarH);
-        ctx.lineTo(right.x, right.y + pillarH);
-        ctx.fill();
-      }
+      ctx.fillStyle = `rgb(${tr * shade * 0.45 | 0},${tg * shade * 0.45 | 0},${tb * shade * 0.45 | 0})`;
+      ctx.beginPath();
+      ctx.moveTo(right.x, right.y);
+      ctx.lineTo(bottom.x, bottom.y);
+      ctx.lineTo(flrBottom.x, flrBottom.y);
+      ctx.lineTo(flrRight.x, flrRight.y);
+      ctx.fill();
 
       // ── LEFT FACE (SW-facing) ──
-      if (pillarH > 0) {
-        ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
-        ctx.beginPath();
-        ctx.moveTo(left.x, left.y);
-        ctx.lineTo(bottom.x, bottom.y);
-        ctx.lineTo(bottom.x, bottom.y + pillarH);
-        ctx.lineTo(left.x, left.y + pillarH);
-        ctx.fill();
-      }
+      ctx.fillStyle = `rgb(${tr * shade * 0.3 | 0},${tg * shade * 0.3 | 0},${tb * shade * 0.3 | 0})`;
+      ctx.beginPath();
+      ctx.moveTo(left.x, left.y);
+      ctx.lineTo(bottom.x, bottom.y);
+      ctx.lineTo(flrBottom.x, flrBottom.y);
+      ctx.lineTo(flrLeft.x, flrLeft.y);
+      ctx.fill();
 
       // ── TOP FACE (terrain surface — NOT water) ──
       if (!isWater) {
