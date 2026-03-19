@@ -186,6 +186,14 @@ function _summer(gen) {
   return texts[Math.floor(Math.random() * texts.length)];
 }
 
+function _volcanic(gen) {
+  const texts = [
+    `Gen ${gen}. Eruption. The ground splits open, ash billows skyward. Everything within range is transformed — or destroyed.`,
+    `Gen ${gen}. Volcanic event. New rock rises from the earth. The ecosystem around the eruption site will never be the same.`,
+  ];
+  return texts[Math.floor(Math.random() * texts.length)];
+}
+
 function _recovery(gen, pop) {
   return `Gen ${gen}. Recovery. After a period of decline, the ecosystem bounces back — ${pop} total individuals across all species. Life finds a way.`;
 }

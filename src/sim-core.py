@@ -329,7 +329,7 @@ def _step_migration():
                     if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
                         suit = HABITAT_SUIT[s, biomes[nr, nc]]
                         if suit > 0.1:
-                            bar = 0.3 if (tile_flags[r,c] & 1 or tile_flags[nr,nc] & 1) else 1.0
+                            bar = _river_barrier_factor(r, c, nr, nc)
                             nbrs.append((nr, nc, suit * bar))
                 if not nbrs: continue
                 tw = sum(w for _,_,w in nbrs)
@@ -564,12 +564,16 @@ def _spawn_river():
 
 
 def _advance_river(river):
-    """Extend river one tile downhill."""
+    """Extend river one tile downhill. Erosion force scales with drainage area (path length)."""
     if not river['active']:
         return
     r, c = river['path'][-1]
     best = None
     best_elev = elevations[r, c]
+
+    # Stream power: erosion scales with upstream drainage area (proxy: path length)
+    erosion_force = RIVER_EROSION * (1 + len(river['path']) * 0.3)
+
     for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
         nr, nc = r+dr, c+dc
         if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
@@ -578,19 +582,36 @@ def _advance_river(river):
                 if e < best_elev:
                     best = (nr, nc)
                     best_elev = e
+
     if best is None:
-        river['stall_gens'] += 1
-        if river['stall_gens'] > 500:
-            _deactivate_river(river)
-        return
+        # Try eroding the lowest neighbor to carve a path
+        lowest_n = None
+        lowest_e = 999
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+                if (nr, nc) not in river['path_set'] and elevations[nr, nc] < lowest_e:
+                    lowest_n = (nr, nc)
+                    lowest_e = elevations[nr, nc]
+        if lowest_n:
+            nr, nc = lowest_n
+            elevations[nr, nc] = max(0, elevations[nr, nc] - erosion_force)
+            if elevations[nr, nc] < elevations[r, c]:
+                best = (nr, nc)
+
+        if best is None:
+            river['stall_gens'] += RIVER_GEO_TICK
+            if river['stall_gens'] >= 500:
+                _deactivate_river(river)
+            return
+
     river['stall_gens'] = 0
     nr, nc = best
     river['path'].append((nr, nc))
     river['path_set'].add((nr, nc))
     tile_flags[nr, nc] |= 1
-    # Reached coast?
     if elevations[nr, nc] < 0.15:
-        river['active'] = False  # complete
+        river['active'] = False
 
 
 def _deactivate_river(river):
@@ -658,6 +679,85 @@ def _check_oxbow(river):
                 return  # one cutoff per step
 
 
+def _reroute_river(river):
+    """
+    Re-trace river path from source following steepest descent.
+    Called after erosion-deposition reshapes terrain.
+    This is how meandering actually works — the river follows the NEW terrain gradient.
+    """
+    if not river['active'] or len(river['path']) < 2:
+        return
+
+    source = river['path'][0]
+
+    # Clear old flags
+    for r, c in river['path']:
+        other = any(rv['active'] and (r,c) in rv['path_set'] for rv in rivers if rv['id'] != river['id'])
+        if not other:
+            tile_flags[r, c] &= ~1
+
+    # Rebuild path greedily from source
+    new_path = [source]
+    visited = {source}
+    r, c = source
+    tile_flags[r, c] |= 1
+
+    max_steps = GRID_SIZE * 3  # prevent infinite loops
+    for _ in range(max_steps):
+        best = None
+        best_elev = elevations[r, c]
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE and (nr,nc) not in visited:
+                e = elevations[nr, nc]
+                if e < best_elev:
+                    best = (nr, nc)
+                    best_elev = e
+        if best is None:
+            break
+        r, c = best
+        new_path.append((r, c))
+        visited.add((r, c))
+        tile_flags[r, c] |= 1
+        if elevations[r, c] < 0.15:
+            break  # reached coast
+
+    river['path'] = new_path
+    river['path_set'] = set(new_path)
+
+
+# River barrier cache — pre-compute barrier strength per tile pair
+_river_barrier_cache = {}
+
+def _build_river_barrier_cache():
+    """Rebuild barrier strength cache from active rivers."""
+    global _river_barrier_cache
+    _river_barrier_cache = {}
+    for river in rivers:
+        if not river['active']:
+            continue
+        strength = 0.01 * river['width'] * river['age']
+        for r, c in river['path']:
+            _river_barrier_cache[(r, c)] = max(
+                _river_barrier_cache.get((r, c), 0), strength
+            )
+
+
+def _river_barrier_factor(r1, c1, r2, c2):
+    """
+    Gene flow reduction factor for migration between two tiles.
+    Returns 0-1 where 1 = no barrier, 0 = complete barrier.
+    Model: m_effective = m / (1 + k × width × age)
+    See evolution-simulation-research.md §12.7
+    """
+    s1 = _river_barrier_cache.get((r1, c1), 0)
+    s2 = _river_barrier_cache.get((r2, c2), 0)
+    strength = max(s1, s2)
+    if strength <= 0:
+        return 1.0
+    return 1.0 / (1.0 + strength)
+
+
 def _step_rivers():
     """Master river update — called on geological ticks."""
     geo_tick = generation // RIVER_GEO_TICK
@@ -672,14 +772,23 @@ def _step_rivers():
 
     _river_erode_deposit()
 
+    # Reroute and check oxbow every N geological ticks
     if geo_tick % RIVER_REROUTE_N == 0:
         for river in rivers:
             if river['active']:
+                _reroute_river(river)
                 _check_oxbow(river)
 
-    # Age oxbow lakes
+    # Rebuild barrier cache after any river changes
+    _build_river_barrier_cache()
+
+    # Age oxbow lakes (slow infill)
     for lake in oxbow_lakes:
         lake['age'] += 1
+        # Very slow elevation rise (lake fills in over time)
+        if lake['age'] % 10 == 0:
+            for r, c in lake['tiles']:
+                elevations[r, c] = min(0.3, elevations[r, c] + 0.002)
 
 
 def _sync_rivers_to_buffer():
@@ -901,6 +1010,164 @@ def _classify_epoch():
         epoch_since = generation
 
 
+# ── TECTONIC PLATES & VOLCANISM ────────────────────────────────────────────────
+# Plates drift slowly, accumulate stress at boundaries, and release
+# stress through volcanic events that transform terrain.
+# See evolution-simulation-research.md §12.9-12.10
+
+TECTONIC_TICK = 500       # gens between tectonic updates
+VOLCANIC_PROB = 0.002     # per-gen chance of eruption when stress is high
+PLATE_COUNT = 3           # number of tectonic plates
+
+tectonic_plates = []  # list of {id, tiles: [(r,c),...], drift: (dr,dc), stress: float}
+
+
+def _init_tectonics():
+    """Assign tiles to tectonic plates via random seed points + flood fill."""
+    global tectonic_plates
+    tectonic_plates = []
+
+    # Seed points
+    seeds = []
+    for i in range(PLATE_COUNT):
+        sr = random.randint(1, GRID_SIZE - 2)
+        sc = random.randint(1, GRID_SIZE - 2)
+        seeds.append((sr, sc))
+
+    # Assign each tile to nearest seed (Voronoi)
+    plate_tiles = [[] for _ in range(PLATE_COUNT)]
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            min_dist = 999
+            closest = 0
+            for i, (sr, sc) in enumerate(seeds):
+                d = abs(r - sr) + abs(c - sc)
+                if d < min_dist:
+                    min_dist = d
+                    closest = i
+            plate_tiles[closest].append((r, c))
+
+    # Random drift directions
+    drifts = [(0, 0)] * PLATE_COUNT
+    for i in range(PLATE_COUNT):
+        drifts[i] = random.choice([(-1,0),(1,0),(0,-1),(0,1),(0,0)])
+
+    for i in range(PLATE_COUNT):
+        tectonic_plates.append({
+            'id': i,
+            'tiles': plate_tiles[i],
+            'tile_set': set(plate_tiles[i]),
+            'drift': drifts[i],
+            'stress': 0.0,
+        })
+
+
+def _get_plate_boundaries():
+    """Find tiles at plate boundaries (adjacent to a different plate's tile)."""
+    boundaries = []
+    plate_map = {}
+    for plate in tectonic_plates:
+        for r, c in plate['tiles']:
+            plate_map[(r, c)] = plate['id']
+
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            pid = plate_map.get((r, c), -1)
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+                    npid = plate_map.get((nr, nc), -1)
+                    if npid != pid and npid >= 0:
+                        boundaries.append((r, c, pid))
+                        break
+    return boundaries
+
+
+def _update_tectonics():
+    """Update tectonic stress and check for volcanic events."""
+    if generation % TECTONIC_TICK != 0 or generation == 0:
+        return
+
+    boundaries = _get_plate_boundaries()
+
+    # Accumulate stress at boundaries
+    for plate in tectonic_plates:
+        boundary_count = sum(1 for _, _, pid in boundaries if pid == plate['id'])
+        if plate['drift'] != (0, 0):
+            plate['stress'] += 0.1 * (1 + boundary_count * 0.05)
+        else:
+            plate['stress'] = max(0, plate['stress'] - 0.05)
+
+    # Boundary uplift — slow elevation increase at convergent boundaries
+    for r, c, pid in boundaries:
+        plate = tectonic_plates[pid]
+        if plate['stress'] > 0.5:
+            elevations[r, c] = min(1.0, elevations[r, c] + 0.01 * plate['stress'])
+
+    # Check for volcanic eruption
+    for plate in tectonic_plates:
+        if plate['stress'] > 2.0 and random.random() < VOLCANIC_PROB * plate['stress']:
+            _volcanic_eruption(plate)
+            plate['stress'] *= 0.3  # release stress
+
+
+def _volcanic_eruption(plate):
+    """
+    Volcanic event at a random boundary tile.
+    Instant terrain transform: elevation spike, temperature spike, food crash.
+    See evolution-simulation-research.md §12.9
+    """
+    boundaries = _get_plate_boundaries()
+    plate_boundaries = [(r, c) for r, c, pid in boundaries if pid == plate['id']]
+    if not plate_boundaries:
+        return
+
+    vr, vc = random.choice(plate_boundaries)
+
+    # Elevation spike at epicenter
+    elevations[vr, vc] = min(1.0, elevations[vr, vc] + 0.3)
+    biomes[vr, vc] = BIOME_ROCKY_SHORE
+
+    # Radius of effect (2 tiles)
+    for dr in range(-2, 3):
+        for dc in range(-2, 3):
+            nr, nc = vr + dr, vc + dc
+            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+                dist = abs(dr) + abs(dc)
+                if dist == 0:
+                    continue
+                # Elevation boost decreases with distance
+                boost = 0.15 / dist
+                elevations[nr, nc] = min(1.0, elevations[nr, nc] + boost)
+                # Vegetation destruction
+                vegetation[nr, nc] *= max(0, 1 - 0.8 / dist)
+                # Population damage (heat/ash)
+                for s in range(NUM_SPECIES):
+                    damage = 0.4 / dist
+                    pop = int(pops[nr, nc, s])
+                    pops[nr, nc, s] = max(0, int(pop * (1 - damage)))
+
+    # Set volcanic tile flag (bit 1)
+    tile_flags[vr, vc] |= 2
+
+    # Reclassify biomes in affected area
+    for dr in range(-2, 3):
+        for dc in range(-2, 3):
+            nr, nc = vr + dr, vc + dc
+            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+                e = elevations[nr, nc]
+                if   e < 0.15: biomes[nr, nc] = BIOME_DEEP_WATER
+                elif e < 0.30: biomes[nr, nc] = BIOME_SHALLOW_MARSH
+                elif e < 0.50: biomes[nr, nc] = BIOME_REED_BEDS
+                elif e < 0.70: biomes[nr, nc] = BIOME_TIDAL_FLATS
+                else:          biomes[nr, nc] = BIOME_ROCKY_SHORE
+
+    events_buffer.append({'gen': generation, 'type': 'volcanic',
+        'text': f'Gen {generation}. Eruption at ({vr},{vc})! '
+                f'The earth splits. Ash rains. Elevation spikes. '
+                f'Life within two tiles is devastated.'})
+
+
 # ── BUFFER SYNC ───────────────────────────────────────────────────────────────
 
 def _sync_to_buffer():
@@ -943,7 +1210,9 @@ def init_simulation():
     generation = 0
     _generate_terrain(str(_seed))
     _init_populations()
+    _init_tectonics()
     _sync_to_buffer()
+    _sync_rivers_to_buffer()
 
 
 def step_simulation(n=1):
@@ -974,9 +1243,10 @@ def step_simulation(n=1):
         if generation % 10 == 0:  # erosion every 10 gens (slow process)
             _apply_erosion()
 
-        # Rivers (geological timescale)
+        # Geological processes
         _spawn_river()
         _step_rivers()
+        _update_tectonics()
 
         # Detection systems
         _check_extinction()
@@ -1024,6 +1294,8 @@ def get_save_state():
         'extinctions': extinctions,
         'rivers': [{'id': r['id'], 'path': r['path'], 'age': r['age'],
                      'width': r['width'], 'active': r['active']} for r in rivers],
+        'tectonic_plates': [{'id': p['id'], 'tiles': p['tiles'], 'drift': p['drift'],
+                              'stress': p['stress']} for p in tectonic_plates],
     }
     return json.dumps(state)
 
@@ -1072,5 +1344,19 @@ def load_save_state(state_json):
         })
     _next_river_id = max((r['id'] for r in rivers), default=-1) + 1
 
+    # Restore tectonic plates
+    tectonic_plates.clear()
+    for pd in state.get('tectonic_plates', []):
+        tectonic_plates.append({
+            'id': pd['id'],
+            'tiles': [tuple(t) for t in pd['tiles']],
+            'tile_set': {tuple(t) for t in pd['tiles']},
+            'drift': tuple(pd['drift']),
+            'stress': pd['stress'],
+        })
+    if not tectonic_plates:
+        _init_tectonics()
+
+    _build_river_barrier_cache()
     _sync_to_buffer()
     _sync_rivers_to_buffer()
