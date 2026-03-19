@@ -5,6 +5,7 @@
 
 import * as sim from './sim.js';
 import { GLOBAL } from './layout.js';
+import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
 
 // ── DOM refs ──
 const $ = id => document.getElementById(id);
@@ -116,6 +117,13 @@ window.addEventListener('resize', resizeCanvases);
 
 // ── Render loop (decoupled from sim) ──
 const SPECIES_COLORS = ['#DDC165', '#C0392B', '#2ECC71', '#E5591C', '#9B59B6'];
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 const SPECIES_NAMES = ['Velothrix', 'Leviathan', 'Crawler', 'Crab', 'Worm'];
 
 function startRenderLoop() {
@@ -145,8 +153,9 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
-      // Render population chart
+      // Render population chart + species cards
       renderPopChart();
+      renderSpeciesCards(pops);
     }
 
     // Render map (every frame — camera might move)
@@ -166,7 +175,7 @@ function renderMap(views) {
   const h = mapCanvas.height / dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  ctx.fillStyle = '#120800';
+  ctx.fillStyle = getMapBg();
   ctx.fillRect(0, 0, w, h);
 
   const gs = sim.getLayout().gridSize;
@@ -177,13 +186,7 @@ function renderMap(views) {
   const offsetX = w / 2;
   const offsetY = (h - gs * tileH * 0.5) / 2 + heightScale * 0.3;
 
-  const BIOME_COLORS = [
-    [15, 30, 60],   // deep_water
-    [30, 55, 40],   // shallow_marsh
-    [45, 60, 30],   // reed_beds
-    [60, 50, 35],   // tidal_flats
-    [75, 58, 45],   // rocky_shore
-  ];
+  const BIOME_COLORS = getBiomeColors();
 
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
@@ -243,12 +246,49 @@ function renderMap(views) {
       ctx.closePath();
       ctx.fill();
 
+      // Water shimmer for aquatic biomes
+      if (biome <= 1) {
+        ctx.fillStyle = getWaterColor();
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - tileH * 0.5);
+        ctx.lineTo(sx + tileW * 0.5, sy);
+        ctx.lineTo(sx, sy + tileH * 0.5);
+        ctx.lineTo(sx - tileW * 0.5, sy);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Species population overlay — show dominant species color
+      let maxPop = 0, maxS = -1;
+      for (let s = 0; s < 5; s++) {
+        const p = views.populations[idx * 5 + s];
+        if (p > maxPop) { maxPop = p; maxS = s; }
+      }
+      if (maxPop > 5 && maxS >= 0) {
+        const intensity = Math.min(0.5, maxPop / 200);
+        ctx.fillStyle = hexToRgba(SPECIES_COLORS[maxS], intensity);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - tileH * 0.5);
+        ctx.lineTo(sx + tileW * 0.5, sy);
+        ctx.lineTo(sx, sy + tileH * 0.5);
+        ctx.lineTo(sx - tileW * 0.5, sy);
+        ctx.closePath();
+        ctx.fill();
+      }
+
       // Grid line
       ctx.strokeStyle = 'rgba(221,193,101,0.06)';
       ctx.lineWidth = 0.5;
       ctx.stroke();
     }
   }
+
+  // Vignette
+  const grad = ctx.createRadialGradient(w/2, h/2, Math.min(w,h)*0.35, w/2, h/2, Math.min(w,h)*0.7);
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
 }
 
 // ── Population chart ──
@@ -291,6 +331,45 @@ function renderPopChart() {
   ctx.globalAlpha = 1;
 }
 
-// ── Show setup on load ──
+// ── Species cards ──
+const speciesCards = $('species-cards');
+const SPECIES_TRAITS = ['Crest Brightness', 'Hunting Range', 'Burrowing Depth', 'Shell Thickness', 'Glow Intensity'];
+
+function renderSpeciesCards(totalPops) {
+  const views = sim.getViews();
+  if (!views) return;
+
+  let html = '';
+  for (let s = 0; s < 5; s++) {
+    const pop = Math.floor(totalPops[s]);
+    const extinct = pop === 0;
+
+    html += `<div class="species-card${extinct ? ' extinct' : ''}" style="border-left-color:${SPECIES_COLORS[s]}">
+      <div class="sp-header">
+        <span class="sp-dot" style="background:${SPECIES_COLORS[s]}"></span>
+        <span class="sp-name">${SPECIES_NAMES[s]}</span>
+        <span class="sp-pop">${extinct ? 'EXTINCT' : pop.toLocaleString()}</span>
+      </div>
+    </div>`;
+  }
+  speciesCards.innerHTML = html;
+}
+
+// ── Theme selector ──
+const themeSelect = $('theme-select');
+function populateThemes() {
+  for (const [id, theme] of Object.entries(THEMES)) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = theme.label;
+    themeSelect.appendChild(opt);
+  }
+}
+populateThemes();
+themeSelect.addEventListener('change', (e) => setTheme(e.target.value));
+
+// ── Init ──
+const savedTheme = loadSavedTheme();
+themeSelect.value = savedTheme;
 loader.classList.add('hidden');
 setup.classList.remove('hidden');

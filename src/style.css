@@ -171,6 +171,14 @@ html, body {
 #season-label {
   font-size: 10px; color: var(--dim);
 }
+.theme-select {
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--mono); font-size: 10px;
+  padding: 2px 6px; border-radius: 3px; cursor: pointer;
+  appearance: none;
+}
+.theme-select:hover { border-color: var(--gold); }
+.theme-select:focus { outline: none; border-color: var(--gold); }
 
 /* ── Map ── */
 #map-area {
@@ -197,6 +205,34 @@ html, body {
   border: 1px solid var(--border);
   border-radius: 4px;
 }
+
+/* ── Species Cards ── */
+.species-card {
+  padding: 6px 10px;
+  border-left: 3px solid;
+  background: var(--card);
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 3px;
+  transition: opacity 0.3s;
+}
+.species-card.extinct { opacity: 0.35; }
+.sp-header {
+  display: flex; align-items: center; gap: 6px;
+}
+.sp-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%; flex-shrink: 0;
+}
+.sp-name {
+  font-size: 11px; font-weight: 600;
+  color: var(--gold-light); flex: 1;
+}
+.sp-pop {
+  font-size: 11px; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.species-card.extinct .sp-name { text-decoration: line-through; }
+.species-card.extinct .sp-pop { color: var(--red); font-size: 9px; }
 
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; }
