@@ -48,6 +48,7 @@ const MAX_HISTORY = 300;
 // Ghost data: extinct species' last N data points, preserved after death
 const ghostData = {}; // species index → [{gen, pop}]
 let knownExtinctions = new Set();
+const extinctionRecords = []; // {species, name, color, bornGen, diedGen, cause, peakPop}
 
 // ── Seed utils ──
 function generateSeed() {
@@ -1180,6 +1181,24 @@ function showEulogy(extData) {
   };
 }
 
+// ── Graveyard panel ──
+function renderGraveyard() {
+  const container = $('graveyard');
+  const entries = $('graveyard-entries');
+  if (extinctionRecords.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+  container.classList.remove('hidden');
+  entries.innerHTML = extinctionRecords.map(r => {
+    const causeLabel = r.cause.replace(/_/g, ' ');
+    return `<div class="graveyard-entry" style="border-left-color:${hexToRgba(r.color, 0.3)}">
+      <div class="graveyard-name"><span class="graveyard-dot" style="background:${r.color}"></span>${r.name}</div>
+      <div class="graveyard-detail">Gen 0–${r.diedGen} · ${causeLabel} · Peak: ${r.peakPop}</div>
+    </div>`;
+  }).join('');
+}
+
 // Check for speciation/extinction events from the queue
 let shownEulogies = new Set();
 function checkSimEvents() {
@@ -1188,6 +1207,17 @@ function checkSimEvents() {
     // Extinction eulogy
     if (evt.type === 'extinction' && evt.data && !shownEulogies.has(evt.data.species)) {
       shownEulogies.add(evt.data.species);
+      const d = evt.data;
+      extinctionRecords.push({
+        species: d.species,
+        name: SPECIES_FULL[d.species],
+        color: SPECIES_COLORS[d.species],
+        bornGen: 0,
+        diedGen: d.gen || Math.floor(sim.getGeneration()),
+        cause: d.cause || 'unknown',
+        peakPop: d.peak_pop || 0,
+      });
+      renderGraveyard();
       showEulogy(evt.data);
     }
 
@@ -1294,6 +1324,8 @@ $('end-new').addEventListener('click', () => {
   popHistory.length = 0;
   Object.keys(ghostData).forEach(k => delete ghostData[k]);
   knownExtinctions.clear();
+  extinctionRecords.length = 0;
+  renderGraveyard();
   shownEulogies.clear();
   lastRenderedGen = -1;
   portraitCanvases = [];
