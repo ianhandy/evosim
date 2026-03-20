@@ -78,6 +78,7 @@ export async function generatePreviewTerrain(gridSize, seed) {
   globalThis._js_river_meta = prevViews.riverMeta;
   globalThis._js_lava_paths = prevViews.lavaPaths;
   globalThis._js_lava_meta = prevViews.lavaMeta;
+  globalThis._js_flow_dirs = prevViews.flowDirs;
   globalThis._layout_json = JSON.stringify(
     Object.fromEntries(
       Object.entries(prevLayout)
@@ -159,6 +160,7 @@ export async function init(gridSize, seed, onProgress) {
   globalThis._js_river_meta = views.riverMeta;
   globalThis._js_lava_paths = views.lavaPaths;
   globalThis._js_lava_meta = views.lavaMeta;
+  globalThis._js_flow_dirs = views.flowDirs;
 
   // Load and execute sim-core.py
   const simCode = await fetch('/sim-core.py').then(r => r.text());

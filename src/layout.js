@@ -66,6 +66,7 @@ export function createLayout(gridSize) {
   layout.riverMeta   = section('riverMeta',   Float32Array, MAX_RIVERS * 4);
   layout.lavaPaths   = section('lavaPaths',   Int16Array,   MAX_LAVA_POINTS * 2);
   layout.lavaMeta    = section('lavaMeta',    Float32Array, MAX_LAVA_FLOWS * 4);
+  layout.flowDirs    = section('flowDirs',    Uint8Array,   G2 * 4); // per-tile: river_entry, river_exit, lava_entry, lava_exit
 
   layout.totalBytes = offset;
   layout.gridSize = gridSize;

@@ -460,6 +460,20 @@ def _generate_terrain(seed_str):
     vegetation[:] = np.minimum(1.0, VEG_REGROWTH[biomes] * 10)
 
 
+def _update_biomes_incremental():
+    """Lightweight biome update — only water/land boundaries. Preserves forest/beach."""
+    SEA_LEVEL = 0.20
+    sunk = (biomes >= 2) & (elevations < SEA_LEVEL)
+    biomes[sunk] = BIOME_SHALLOW_MARSH
+    biomes[(elevations < 0.08)] = BIOME_DEEP_WATER
+    rose = (biomes <= 1) & (elevations >= SEA_LEVEL)
+    biomes[rose] = BIOME_TIDAL_FLATS
+    dying_forest = (biomes == BIOME_REED_BEDS) & (vegetation < 0.1)
+    biomes[dying_forest] = BIOME_TIDAL_FLATS
+    volcanic = (tile_flags & 2) > 0
+    biomes[volcanic & (elevations >= SEA_LEVEL)] = BIOME_ROCKY_SHORE
+
+
 def _assign_biomes():
     """
     Classify biomes via probabilistic BFS from coastline.
@@ -946,7 +960,7 @@ def _apply_erosion():
     elevations[erode_mask] -= EROSION_RATE * diff[erode_mask]
     np.maximum(elevations, 0, out=elevations)
     # Reclassify biomes after elevation changes
-    _assign_biomes()
+    _update_biomes_incremental()
 
 
 # ── RIVERS & TERRAIN DYNAMICS ─────────────────────────────────────────────────
@@ -1587,7 +1601,7 @@ def _volcanic_eruption(plate):
     tile_flags[vr, vc] |= 2
 
     # Reclassify biomes after terrain change
-    _assign_biomes()
+    _update_biomes_incremental()
 
     events_buffer.append({'gen': generation, 'type': 'volcanic',
         'text': f'Gen {generation}. Eruption at ({vr},{vc})! '
@@ -1606,7 +1620,7 @@ def _volcanic_eruption(plate):
 lava_flows = []    # list of lava dicts (same structure as rivers)
 _next_lava_id = 0
 
-LAVA_DEPOSIT = 0.02     # elevation gain per tick at flow terminus
+LAVA_DEPOSIT = 0.001    # elevation gain per tick at flow terminus
 LAVA_COOLING_RATE = 50   # generations until a lava flow solidifies
 LAVA_MAX_LENGTH = 20     # max path length
 
@@ -1671,7 +1685,7 @@ def _step_lava_flows():
         if lava['age'] > LAVA_COOLING_RATE:
             lava['active'] = False
             # Reclassify biomes where lava deposited
-            _assign_biomes()
+            _update_biomes_incremental()
 
     # Remove very old inactive flows (keep last 5 for rendering)
     inactive = [lf for lf in lava_flows if not lf['active']]
@@ -1710,6 +1724,40 @@ def _sync_lava_to_buffer():
         meta_data.extend([-1, 0, 0, 0])
 
     _js_lava_meta.set(to_js(np.array(meta_data[:max_flows * 4], dtype=np.float32)))
+
+
+def _sync_flow_dirs():
+    """Compute per-tile entry/exit directions for rivers and lava."""
+    from js import _js_flow_dirs
+    from pyodide.ffi import to_js
+    gs = GRID_SIZE
+    dirs = np.zeros((gs, gs, 4), dtype=np.uint8)
+    dir_map = {
+        (-1, -1): 1, (-1, 0): 2, (-1, 1): 3,
+        (0, 1): 4, (1, 1): 5, (1, 0): 6,
+        (1, -1): 7, (0, -1): 8,
+    }
+    def _encode_paths(flow_list, entry_ch, exit_ch):
+        for flow in flow_list:
+            path = flow['path']
+            for i, (r, c) in enumerate(path):
+                if r < 0 or r >= gs or c < 0 or c >= gs:
+                    continue
+                if i > 0:
+                    pr, pc = path[i - 1]
+                    dr, dc = pr - r, pc - c
+                    d = dir_map.get((dr, dc), 0)
+                    if d > 0:
+                        dirs[r, c, entry_ch] = d
+                if i < len(path) - 1:
+                    nr, nc = path[i + 1]
+                    dr, dc = nr - r, nc - c
+                    d = dir_map.get((dr, dc), 0)
+                    if d > 0:
+                        dirs[r, c, exit_ch] = d
+    _encode_paths(rivers, 0, 1)
+    _encode_paths(lava_flows, 2, 3)
+    _js_flow_dirs.set(to_js(dirs.ravel()))
 
 
 # ── BUFFER SYNC ───────────────────────────────────────────────────────────────
@@ -1758,6 +1806,7 @@ def init_simulation():
     _sync_to_buffer()
     _sync_rivers_to_buffer()
     _sync_lava_to_buffer()
+    _sync_flow_dirs()
 
 
 def step_simulation(n=1):
@@ -1800,6 +1849,7 @@ def step_simulation(n=1):
     _sync_to_buffer()
     _sync_rivers_to_buffer()
     _sync_lava_to_buffer()
+    _sync_flow_dirs()
 
 
 def flush_events():
@@ -1875,6 +1925,7 @@ def debug_trigger_event(event_type):
                 'text': f'Gen {generation}. [DEBUG] Volcanic eruption forced.'})
             _sync_to_buffer()
             _sync_lava_to_buffer()
+            _sync_flow_dirs()
     return f'{event_type} triggered'
 
 
@@ -1992,3 +2043,4 @@ def load_save_state(state_json):
     _sync_to_buffer()
     _sync_rivers_to_buffer()
     _sync_lava_to_buffer()
+    _sync_flow_dirs()
