@@ -41,6 +41,6 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, 'localhost', () => {
   console.log(`evosim serving on http://localhost:${PORT}`);
 });

@@ -14,6 +14,7 @@
 // ── Terrain shaders ──
 
 const VERT_SRC = `
+  precision mediump float;
   attribute vec2 a_quad;
   attribute float a_tileIdx;
   attribute float a_faceType;     // 0=top, 1=right side, 2=left side
