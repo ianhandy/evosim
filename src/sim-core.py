@@ -219,19 +219,19 @@ def _generate_terrain(seed_str):
     hotspots = []
     hotspots_per_rift = max(3, igs // 30)  # 3-8 per rift
 
-    # Central summit hotspot (biggest — drives the core island mass)
+    # Central summit — modest peak, the ridges do the heavy lifting
     hotspots.append({
         'x': center_r, 'y': center_c,
-        'power': rng.uniform(0.25, 0.38),
-        'radius': rng.uniform(igs * 0.12, igs * 0.22),
+        'power': rng.uniform(0.10, 0.16),
+        'radius': rng.uniform(igs * 0.06, igs * 0.10),
     })
 
     for ri, points in enumerate(rift_points):
         n_hs = rng.randint(hotspots_per_rift, hotspots_per_rift + 3)
         for _ in range(n_hs):
-            # Biased toward center: t = random()^2 clusters near 0
-            t = rng.random() ** 2
-            t = max(0.08, min(0.95, t))  # not right at center or tip
+            # Spread along the rift — less center bias so peaks form along the ridges
+            t = rng.random() ** 1.3  # mild center bias (was ^2)
+            t = max(0.05, min(0.95, t))
 
             # Interpolate along the curved rift
             idx_f = t * (len(points) - 1)
@@ -254,8 +254,8 @@ def _generate_terrain(seed_str):
 
             # Power and radius decay with distance from center
             dist_factor = 1.0 - t * 0.6  # 100% at center → 40% at tip
-            power = rng.uniform(0.12, 0.26) * dist_factor
-            radius = rng.uniform(igs * 0.06, igs * 0.18) * dist_factor
+            power = rng.uniform(0.10, 0.18) * dist_factor
+            radius = rng.uniform(igs * 0.04, igs * 0.10) * dist_factor
 
             hotspots.append({'x': pr, 'y': pc, 'power': power, 'radius': radius})
 
@@ -264,12 +264,11 @@ def _generate_terrain(seed_str):
     # that decays quadratically toward the tips.
     rows_grid, cols_grid = np.meshgrid(np.arange(igs), np.arange(igs), indexing='ij')
     for ri, points in enumerate(rift_points):
-        ridge_width = igs * rng.uniform(0.05, 0.10)
-        ridge_power = rng.uniform(0.06, 0.14)
+        ridge_width = igs * rng.uniform(0.06, 0.12)
+        ridge_power = rng.uniform(0.12, 0.22)
 
-        # For each grid cell, find distance to nearest rift point
-        # (simplified: sample every 4th point for performance)
-        for si in range(0, len(points), 2):
+        # Sample every other rift point for the Gaussian ridge contribution
+        for si in range(0, len(points), 3):
             pr, pc = points[si]
             t = si / len(points)  # 0=center, 1=tip
             decay = (1 - t) ** 2  # quadratic decay toward tip
@@ -279,7 +278,7 @@ def _generate_terrain(seed_str):
             dist = np.sqrt(dr * dr + dc * dc)
             # Gaussian cross-section
             contrib = ridge_power * decay * np.exp(-(dist * dist) / (2 * ridge_width * ridge_width))
-            grid += contrib.astype(np.float32) * 0.8
+            grid += contrib.astype(np.float32)
 
     # ── Simulate geological epochs ──
     num_epochs = rng.randint(120, 250)
