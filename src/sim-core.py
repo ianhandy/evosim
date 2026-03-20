@@ -426,6 +426,20 @@ def _generate_terrain(seed_str):
                 if 0 <= pr < gs and 0 <= pc < gs:
                     tile_flags[pr, pc] |= 2
 
+    # ── Edge ramp — smoothly slope terrain into ocean near grid edges ──
+    # Applied on raw grid (before normalization) so the terrain itself
+    # gradually descends, creating natural coastlines at the border.
+    edge_band = max(4, gs // 4)  # wide band: 8 tiles at 32, 16 at 64
+    row_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
+    col_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
+    edge_dist = np.minimum(row_d[:, None], col_d[None, :])
+    edge_t = np.clip(edge_dist / edge_band, 0, 1)
+    # Smoothstep for natural ramp
+    edge_factor = edge_t * edge_t * (3 - 2 * edge_t)
+    # Blend raw elevation toward deep ocean floor at edges
+    ocean_floor = grid.min()
+    grid = grid * edge_factor + ocean_floor * (1 - edge_factor)
+
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
     if hi <= lo:
@@ -440,19 +454,6 @@ def _generate_terrain(seed_str):
     elevations[:] = np.where(underwater,
         (raw_norm / max(0.001, zero_norm)) * 0.20,
         0.20 + (raw_norm - zero_norm) / max(0.001, 1 - zero_norm) * 0.80)
-
-    # ── Final edge falloff — guarantee ocean at all edges ──
-    # Smooth ramp: tiles within 2 cells of edge get pushed toward deep ocean.
-    # This catches any land that survived the radial falloff + crop.
-    edge_band = max(2, gs // 16)  # 2 tiles at 32, 4 at 64, 8 at 128
-    row_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
-    col_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
-    edge_dist = np.minimum(row_d[:, None], col_d[None, :])
-    edge_factor = np.clip(edge_dist / edge_band, 0, 1)
-    # Smoothstep for natural transition
-    edge_factor = edge_factor * edge_factor * (3 - 2 * edge_factor)
-    # Push edge tiles toward deep water (elevation 0.05)
-    elevations[:] = elevations * edge_factor + 0.05 * (1 - edge_factor)
 
     _assign_biomes()
 
