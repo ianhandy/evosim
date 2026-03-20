@@ -30,11 +30,15 @@ const VERT_SRC = `
   varying float v_biome;
   varying float v_elev;
   varying float v_faceType;
+  varying float v_dither;
 
   void main() {
     float gs = u_gridSize;
     float row = floor(a_tileIdx / gs);
     float col = a_tileIdx - row * gs;
+
+    // Per-tile dither value — deterministic hash from row/col
+    v_dither = fract(sin(row * 127.1 + col * 311.7) * 43758.5453);
 
     // Sample elevation
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
@@ -100,6 +104,7 @@ const FRAG_SRC = `
   varying float v_biome;
   varying float v_elev;
   varying float v_faceType;
+  varying float v_dither;
 
   // Biome colors (must match themes.js order)
   uniform vec3 u_biomeColors[5];
@@ -115,6 +120,12 @@ const FRAG_SRC = `
 
     // Elevation brightening
     vec3 color = bc / 255.0 + vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
+
+    // Light dither on land tiles — subtle per-tile brightness variation
+    if (biome > 1 && v_faceType < 0.5) {
+      // Range: ±0.04 brightness shift
+      color += (v_dither - 0.5) * 0.08;
+    }
 
     // Apply face shading
     color *= v_shade;
