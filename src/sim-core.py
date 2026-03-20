@@ -108,56 +108,24 @@ COMPETITION = [
 
 
 # ── TERRAIN ───────────────────────────────────────────────────────────────────
-
-def _smooth_noise(size, seed_val, scale=1.0):
-    """
-    Generate smooth 2D noise using scipy's gaussian filter on random values.
-    This produces natural-looking continuous terrain, not blocky grids.
-    """
-    from scipy.ndimage import gaussian_filter
-    rng = np.random.RandomState(seed_val)
-    raw = rng.rand(size, size).astype(np.float32)
-    # Sigma controls feature size — larger = smoother, bigger features
-    sigma = size * 0.08 * scale
-    smooth = gaussian_filter(raw, sigma=sigma, mode='wrap')
-    # Normalize to 0-1
-    lo, hi = smooth.min(), smooth.max()
-    if hi > lo:
-        smooth = (smooth - lo) / (hi - lo)
-    return smooth
-
-
-def _fbm_noise(size, seed_val, octaves=6, lacunarity=2.0, gain=0.5):
-    """
-    Fractal Brownian Motion — layered smooth noise at multiple scales.
-    Produces realistic terrain with both large features and fine detail.
-    """
-    result = np.zeros((size, size), dtype=np.float32)
-    amp = 1.0
-    total = 0.0
-    for o in range(octaves):
-        scale = 1.0 / (lacunarity ** o)
-        layer = _smooth_noise(size, seed_val + o * 1337, scale=scale)
-        result += layer * amp
-        total += amp
-        amp *= gain
-    return result / total
-
+# Hotspot volcanism model — based on Hawaiian chain formation.
+# A fixed mantle plume erupts repeatedly while the plate drifts over it,
+# creating a chain of islands. Older islands erode and subside.
 
 def _generate_terrain(seed_str):
     """
-    Generate terrain by simulating tectonic plate collision.
+    Generate terrain via hotspot volcanism + plate drift + erosion.
 
-    1. Start with a flat plane of random low-frequency noise (primordial crust)
-    2. Create N tectonic plates with drift vectors
-    3. Simulate T steps of plate movement:
-       - Convergent boundaries: uplift (mountains, ridges)
-       - Divergent boundaries: rift valleys, lower elevation
-       - Plate interiors: stable, slight noise
-    4. Snapshot the result at a random point in the timeline
-    5. Apply FBM detail noise for surface features
-    6. Edge falloff for ocean border
+    1. Start with flat ocean floor (negative elevation, ~-0.45 + noise)
+    2. Place 1-3 hotspot mantle plumes at fixed positions
+    3. Simulate N epochs of geological time:
+       a. Each hotspot erupts: deposits elevation with squared falloff
+       b. Plate drift: builds trail of decreasing deposits behind hotspot
+       c. Erosion: flat subtraction + weighted blur smoothing
+    4. Snapshot at a random epoch for terrain diversity
     """
+    from scipy.ndimage import gaussian_filter
+
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
     np.random.seed(seed_val % (2**31))
@@ -165,98 +133,111 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Primordial crust: low-frequency noise baseline ──
-    crust = _smooth_noise(gs, seed_val, scale=0.3)
-    crust = crust * 0.3 + 0.2  # baseline 0.2–0.5
+    # ── Ocean floor baseline: slightly noisy, all negative ──
+    grid = rng.uniform(-0.50, -0.40, (gs, gs)).astype(np.float32)
 
-    # ── Create tectonic plates via Voronoi ──
-    num_plates = max(3, gs // 12)
-    plate_seeds = []
-    for _ in range(num_plates):
-        plate_seeds.append((
-            rng.uniform(gs * 0.1, gs * 0.9),
-            rng.uniform(gs * 0.1, gs * 0.9),
-        ))
+    # ── Plate drift direction (single plate, random direction) ──
+    drift_angle = rng.uniform(0, 2 * math.pi)
+    drift_dx = math.cos(drift_angle)
+    drift_dy = math.sin(drift_angle)
+    drift_speed = rng.uniform(0.3, 0.7)  # cells per epoch
 
-    # Assign tiles to nearest plate
-    plate_id = np.zeros((gs, gs), dtype=np.int32)
+    # ── Hotspots: fixed mantle plume positions ──
+    num_hotspots = rng.randint(1, 4)  # 1-3 hotspots
+    hotspots = []
+    for _ in range(num_hotspots):
+        hx = rng.uniform(gs * 0.15, gs * 0.85)
+        hy = rng.uniform(gs * 0.15, gs * 0.85)
+        power = rng.uniform(0.06, 0.14)        # eruption deposit per tick
+        radius = rng.uniform(gs * 0.04, gs * 0.10)  # eruption radius
+        hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
+
+    # ── Simulate geological epochs ──
+    num_epochs = rng.randint(60, 150)
+    snapshot_epoch = rng.randint(num_epochs // 2, num_epochs)  # pick a point in time
+
+    for epoch in range(num_epochs):
+        # ── Eruptions from each hotspot ──
+        for hs in hotspots:
+            if rng.random() < 0.7:  # 70% chance of eruption per tick
+                # Jitter eruption strength and radius for organic feel
+                erupt_power = hs['power'] * rng.uniform(0.6, 1.4)
+                erupt_radius = hs['radius'] * rng.uniform(0.7, 1.3)
+
+                # Deposit elevation with squared falloff from hotspot center
+                cx, cy = int(hs['x']), int(hs['y'])
+                ir = int(erupt_radius) + 1
+                for dr in range(-ir, ir + 1):
+                    for dc in range(-ir, ir + 1):
+                        r, c = cx + dr, cy + dc
+                        if 0 <= r < gs and 0 <= c < gs:
+                            dist = math.sqrt(dr * dr + dc * dc)
+                            if dist < erupt_radius:
+                                # Squared falloff: steep conical profile
+                                t = 1 - (dist / erupt_radius)
+                                deposit = erupt_power * t * t
+                                grid[r, c] += deposit
+
+            # ── Island chain trail: walk backward along drift vector ──
+            # Older deposits at decreasing strength behind the hotspot
+            trail_len = int(epoch * drift_speed * 0.4)
+            for step in range(1, min(trail_len, gs)):
+                tr = int(hs['x'] - drift_dx * step * 1.5)
+                tc = int(hs['y'] - drift_dy * step * 1.5)
+                if 0 <= tr < gs and 0 <= tc < gs:
+                    # Decreasing strength with distance
+                    strength = hs['power'] * 0.3 / (1 + step * 0.15)
+                    trail_r = max(1, int(hs['radius'] * 0.5))
+                    for dr in range(-trail_r, trail_r + 1):
+                        for dc in range(-trail_r, trail_r + 1):
+                            rr, cc = tr + dr, tc + dc
+                            if 0 <= rr < gs and 0 <= cc < gs:
+                                d = math.sqrt(dr*dr + dc*dc)
+                                if d < trail_r:
+                                    t = 1 - d / trail_r
+                                    grid[rr, cc] += strength * t * t * rng.uniform(0.5, 1.0) * 0.1
+
+        # ── Erosion: flat subtraction ──
+        for r in range(gs):
+            for c in range(gs):
+                if grid[r, c] > 0:
+                    # Land erodes slowly; fresh lava erodes faster
+                    rate = 0.008 if grid[r, c] > 0.85 else 0.002
+                    grid[r, c] -= rate
+
+        # ── Smoothing: weighted blur (6:1:1:1:1 kernel) ──
+        # Spreads material outward, softens peaks, widens coastlines
+        blurred = gaussian_filter(grid, sigma=0.6, mode='nearest')
+        grid = grid * 0.85 + blurred * 0.15
+
+        # ── Save snapshot ──
+        if epoch == snapshot_epoch:
+            snapshot = grid.copy()
+
+    # Use the snapshot (or final state if snapshot wasn't reached)
+    if 'snapshot' in dir():
+        grid = snapshot
+
+    # ── Map to elevation array ──
+    # The grid has negative values (ocean) and positive (land).
+    # Normalize so that sea level (0) maps to our WATER_LEVEL threshold.
+    # Values below 0 → below water level, values above 0 → above water level.
+    # Shift and scale so the range fits 0–1 with sea level at ~0.20
+    lo, hi = grid.min(), grid.max()
+    if hi <= lo:
+        hi = lo + 1
+
+    # Map 0 (sea level) to 0.20 in our 0-1 range
+    sea_level_in_grid = 0.0
     for r in range(gs):
         for c in range(gs):
-            min_d = 1e9
-            for pi, (pr, pc) in enumerate(plate_seeds):
-                d = (r - pr)**2 + (c - pc)**2
-                if d < min_d:
-                    min_d = d
-                    plate_id[r, c] = pi
-
-    # Plate drift vectors (direction + magnitude)
-    drifts = []
-    for _ in range(num_plates):
-        angle = rng.uniform(0, 2 * math.pi)
-        speed = rng.uniform(0.3, 1.5)
-        drifts.append((math.cos(angle) * speed, math.sin(angle) * speed))
-
-    # ── Simulate tectonic steps ──
-    sim_steps = rng.randint(30, 80)  # random point in geological timeline
-    for step in range(sim_steps):
-        # Find plate boundaries and apply forces
-        for r in range(1, gs - 1):
-            for c in range(1, gs - 1):
-                pid = plate_id[r, c]
-                dr, dc = drifts[pid]
-
-                # Check neighbors for different plates
-                for nr, nc in [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]:
-                    npid = plate_id[nr, nc]
-                    if npid == pid:
-                        continue
-
-                    ndr, ndc = drifts[npid]
-
-                    # Relative motion toward each other = convergent
-                    # Vector from this tile toward neighbor
-                    toward_r = nr - r
-                    toward_c = nc - c
-                    # Dot product of drift with toward-vector
-                    convergence = (dr * toward_r + dc * toward_c) - (ndr * toward_r + ndc * toward_c)
-
-                    if convergence > 0:
-                        # Convergent: uplift (mountains form)
-                        crust[r, c] += 0.003 * convergence
-                    else:
-                        # Divergent: rift (lower)
-                        crust[r, c] += 0.001 * convergence  # convergence is negative
-
-    # ── Apply FBM detail noise ──
-    detail = _fbm_noise(gs, seed_val + 4444, octaves=5, gain=0.5)
-    result = crust * 0.7 + detail * 0.3
-
-    # ── Edge falloff — ocean at borders ──
-    border = gs * 0.06
-    for r in range(gs):
-        for c in range(gs):
-            edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
-            if edge_dist < border:
-                result[r, c] *= (edge_dist / border) ** 2
-
-    # ── Normalize to 0–1 ──
-    lo, hi = result.min(), result.max()
-    if hi > lo:
-        result = (result - lo) / (hi - lo)
-
-    # Adjust distribution: ~30% water, ~70% land
-    sorted_elev = np.sort(result.ravel())
-    water_idx = int(G2 * 0.30)
-    threshold = sorted_elev[min(water_idx, G2 - 1)]
-    # Remap below threshold to 0–0.14, above to 0.15–1.0
-    for r in range(gs):
-        for c in range(gs):
-            if result[r, c] <= threshold:
-                result[r, c] = (result[r, c] / max(0.001, threshold)) * 0.14
+            if grid[r, c] <= sea_level_in_grid:
+                # Underwater: map [lo, 0] → [0, 0.20]
+                elevations[r, c] = max(0, (grid[r, c] - lo) / max(0.001, sea_level_in_grid - lo) * 0.20)
             else:
-                result[r, c] = 0.15 + (result[r, c] - threshold) / max(0.001, 1 - threshold) * 0.85
+                # Land: map [0, hi] → [0.20, 1.0]
+                elevations[r, c] = min(1.0, 0.20 + (grid[r, c] / max(0.001, hi)) * 0.80)
 
-    elevations[:] = result
     _assign_biomes()
 
     for r in range(gs):
@@ -266,17 +247,17 @@ def _generate_terrain(seed_str):
 
 def _assign_biomes():
     """
-    Classify biomes from elevation thresholds.
-    Order: deep water → shallow water → beach/sand → forest → mountain
+    Classify biomes from elevation. Sea level is at ~0.20.
+    Below 0.20 = underwater. Above = land types by elevation.
     """
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             e = elevations[r, c]
-            if   e < 0.12: biomes[r, c] = BIOME_DEEP_WATER      # ocean floor
-            elif e < 0.20: biomes[r, c] = BIOME_SHALLOW_MARSH    # coastal shallows
-            elif e < 0.30: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
-            elif e < 0.60: biomes[r, c] = BIOME_REED_BEDS        # forest / vegetation
-            else:          biomes[r, c] = BIOME_ROCKY_SHORE       # mountain / volcanic rock
+            if   e < 0.08: biomes[r, c] = BIOME_DEEP_WATER      # deep ocean
+            elif e < 0.20: biomes[r, c] = BIOME_SHALLOW_MARSH    # shallow water
+            elif e < 0.28: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
+            elif e < 0.55: biomes[r, c] = BIOME_REED_BEDS        # lowland forest
+            else:          biomes[r, c] = BIOME_ROCKY_SHORE       # highland / volcanic peak
 
 
 # ── POPULATION SEEDING ────────────────────────────────────────────────────────

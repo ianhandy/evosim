@@ -236,10 +236,10 @@ function renderPreview() {
       // Biome thresholds match Python _assign_biomes():
       // deep water → shallow → beach → forest → mountain
       let biome;
-      if (e < 0.12) biome = 0;       // deep water
+      if (e < 0.08) biome = 0;       // deep water
       else if (e < 0.20) biome = 1;  // shallow water
-      else if (e < 0.30) biome = 3;  // beach/sand (TIDAL_FLATS = index 3)
-      else if (e < 0.60) biome = 2;  // forest (REED_BEDS = index 2)
+      else if (e < 0.28) biome = 3;  // beach/sand (TIDAL_FLATS = index 3)
+      else if (e < 0.55) biome = 2;  // forest (REED_BEDS = index 2)
       else biome = 4;                // mountain/volcanic
 
       const bc = biomeColors[biome];
@@ -580,7 +580,7 @@ function renderMap(views) {
   const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
 
   // Water level plane
-  const WATER_LEVEL = 0.18;
+  const WATER_LEVEL = 0.20;  // sea level in normalized elevation
 
   // No artificial floor — pillars extend to each tile's actual elevation.
   // The diorama shows the full terrain depth.
