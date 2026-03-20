@@ -393,16 +393,19 @@ mapCanvas.addEventListener('dblclick', () => {
   camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
 });
 
-// Q/E to rotate map in 45° increments
+// Q/E to rotate, P to toggle population overlay
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  const step = Math.PI / 4; // 45 degrees
+  const step = Math.PI / 4;
   if (e.key === 'q' || e.key === 'Q') {
     camRotation -= step;
-    console.log('Rotate left:', camRotation);
   } else if (e.key === 'e' || e.key === 'E') {
     camRotation += step;
-    console.log('Rotate right:', camRotation);
+  } else if (e.key === 'p' || e.key === 'P') {
+    if (mapRenderer) {
+      mapRenderer.popMode = !mapRenderer.popMode;
+      console.log('Population overlay:', mapRenderer.popMode ? 'ON' : 'OFF');
+    }
   }
 });
 
@@ -515,10 +518,14 @@ function startRenderLoop() {
 
     // Render map (every frame — camera might move)
     if (mapRenderer) {
-      // WebGL path
-      if (gen !== lastRenderedGen || true) { // always update for camera movement
-        mapRenderer.updateData(views.elevations, views.biomes);
-      }
+      // Species colors as RGB arrays for population overlay
+      const specRGB = SPECIES_COLORS.map(hex => [
+        parseInt(hex.slice(1,3), 16),
+        parseInt(hex.slice(3,5), 16),
+        parseInt(hex.slice(5,7), 16)
+      ]);
+      mapRenderer.updateData(views.elevations, views.biomes, views.populations, specRGB);
+      mapRenderer.updateRivers(views.riverPaths, views.riverMeta);
       mapRenderer.render(
         { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotation: camRotation },
         getBiomeColors()
@@ -1432,7 +1439,7 @@ function checkDisclosures(gen, pops) {
       'Your Observation Begins',
       `<p>You're watching 5 species evolve in real time. The simulation runs <strong>population genetics equations</strong> every generation — the same math biologists use to model real evolution.</p>
 <p>The <strong>map</strong> shows terrain and species density. The <strong>chart</strong> tracks population over time. The <strong>journal</strong> records significant events.</p>
-<p>Drag to pan. Scroll to zoom. Right-drag to tilt. Q/E to rotate.</p>
+<p>Drag to pan. Scroll to zoom. Right-drag to tilt. Q/E rotate. P population overlay.</p>
 <p>Click the <strong>?</strong> buttons anytime for detailed explanations of the science behind each panel.</p>`
     );
   }
