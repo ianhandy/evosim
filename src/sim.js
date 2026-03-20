@@ -40,6 +40,17 @@ export async function preload(onProgress) {
   await pyodide.loadPackage('numpy');
   onProgress?.('scipy', 80);
   await pyodide.loadPackage('scipy');
+
+  // Write terrain_gen.py to Pyodide VFS so `import terrain_gen` works.
+  // `/` is added to sys.path to make it importable.
+  const terrainCode = await fetch('/terrain_gen.py').then(r => r.text());
+  pyodide.FS.writeFile('/terrain_gen.py', terrainCode);
+  pyodide.runPython(`
+import sys
+if '/' not in sys.path:
+    sys.path.insert(0, '/')
+`);
+
   preloaded = true;
   onProgress?.('ready', 100);
 }
