@@ -410,7 +410,7 @@ def _generate_terrain(seed_str):
                 pr, pc = int(pr), int(pc)
                 # Volcano radius and height scale with local elevation
                 local_elev = grid[pr, pc]
-                v_radius = rng.uniform(gs * 0.06, gs * 0.12)
+                v_radius = rng.uniform(gs * 0.08, gs * 0.16)
                 v_height = rng.uniform(0.08, 0.18) * (0.5 + local_elev)
                 dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
                 in_cone = dist < v_radius
