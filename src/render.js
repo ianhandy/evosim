@@ -153,6 +153,7 @@ const FRAG_SRC = `
 // ── River shaders (line segments in iso space) ──
 
 const RIVER_VERT_SRC = `
+  precision mediump float;
   attribute vec2 a_pos;           // grid position (row, col) as float
   attribute float a_width;
 

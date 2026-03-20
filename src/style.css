@@ -31,6 +31,8 @@ html, body {
   line-height: 1.5;
   overflow: hidden;
   -webkit-text-size-adjust: 100%;
+  /* Safe area for notched phones */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 .hidden { display: none !important; }
@@ -147,11 +149,16 @@ html, body {
   height: 100vh; height: 100dvh;
   display: grid;
   grid-template-rows: auto 1fr;
+  grid-template-columns: 1fr;
+}
+
+#main {
+  display: grid;
   grid-template-columns: 1fr 320px;
+  min-height: 0;
 }
 
 #header {
-  grid-column: 1 / -1;
   display: flex; align-items: center;
   padding: 6px 12px; gap: 12px;
   background: var(--bg-dark);
@@ -613,9 +620,9 @@ html, body {
 
 /* ── Mobile ── */
 @media (max-width: 768px) {
-  #app {
+  #main {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 1fr auto;
   }
 
   #header {
@@ -623,10 +630,20 @@ html, body {
   }
   #header h1 { font-size: 14px; }
 
+  .controls {
+    order: 10; /* push controls to second row */
+    width: 100%;
+    justify-content: center;
+  }
+
   .btn {
     min-height: 36px;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  #map-area {
+    min-height: 40vh;
   }
 
   #panel {
@@ -649,16 +666,18 @@ html, body {
   #epoch-name { font-size: 9px; padding: 2px 8px; }
 
   #setup h1 { font-size: 24px; }
-  #seed-input { font-size: 16px; }
+  #seed-input { font-size: 16px; /* prevents iOS zoom on focus */ }
   .btn-primary { min-height: 48px; }
   .size-btn { min-height: 44px; }
   #preview-canvas { height: 200px; }
 }
 
 @media (max-width: 420px) {
-  #header h1 { font-size: 12px; }
+  #header h1 { font-size: 12px; letter-spacing: 1px; }
   .btn { font-size: 10px; padding: 4px 8px; min-height: 32px; }
   .speed-btn { padding: 4px 6px; }
+  #map-area { min-height: 35vh; }
+  #panel { max-height: 50vh; }
   #pentagon-chart { height: 100px; }
   #pop-chart { height: 100px; }
   .panel-header { padding: 2px 0; }
@@ -669,8 +688,14 @@ html, body {
   #tooltip-card { padding: 12px 14px; }
   #tooltip-title { font-size: 12px; }
   #tooltip-body { font-size: 10px; }
-  .header-right .btn-small { display: none; } /* hide save/lod on tiny screens */
+  .header-right .btn-small { display: none; }
   .theme-select { font-size: 9px; padding: 2px 4px; }
+
+  /* Setup screen on small phones */
+  #setup { padding: 16px; gap: 12px; }
+  .setup-form { max-width: 100%; }
+  #preview-canvas { height: 160px; }
+  .challenge-btn { font-size: 9px; padding: 5px 6px; }
 }
 
 /* ── Challenge Selector ── */
