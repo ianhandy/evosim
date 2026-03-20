@@ -534,6 +534,78 @@ html, body {
   line-height: 1.5;
 }
 
+/* ── Lab Tabs ── */
+#lab-tabs {
+  display: flex; gap: 2px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+#lab-tabs::-webkit-scrollbar { display: none; }
+.lab-tab {
+  background: none; border: 1px solid transparent;
+  color: var(--dim);
+  font-family: var(--mono); font-size: 9px;
+  padding: 4px 8px; cursor: pointer;
+  border-radius: 3px;
+  white-space: nowrap;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  transition: all 0.15s;
+}
+.lab-tab:hover { color: var(--text); border-color: var(--border); }
+.lab-tab.active {
+  background: var(--gold); color: var(--bg);
+  border-color: var(--gold); font-weight: 700;
+}
+.tab-content { display: none; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; }
+.tab-content.active { display: flex; }
+
+/* ── Selection Charts ── */
+.trait-chart {
+  width: 100%; height: 100px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Life History Chart ── */
+#life-history-chart {
+  width: 100%; height: 260px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* ── Stats Readouts ── */
+#stats-readouts {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.stat-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.stat-label {
+  font-size: 9px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.stat-value {
+  font-size: 14px; font-weight: 700;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+.stat-sub {
+  font-size: 9px; color: var(--dim);
+  margin-top: 1px;
+}
+
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -567,6 +639,8 @@ html, body {
   #pentagon-chart { height: 120px; }
   #pop-chart { height: 120px; }
   #journal-feed { max-height: 100px; }
+  .trait-chart { height: 80px; }
+  #life-history-chart { height: 200px; }
   .sp-portrait { width: 32px !important; height: 32px !important; }
   .sp-name { font-size: 9px; }
   .sp-pop { font-size: 10px; }
