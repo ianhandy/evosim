@@ -721,32 +721,49 @@ def _assign_biomes():
                 # Determine if this tile is forest or beach
                 is_forest = False
 
-                if parent_streak >= 2:
-                    # Two consecutive forest tiles → all forest from here
+                # Absolute elevation above sea level
+                above_sea = n_elev - SEA_LEVEL
+
+                if rise >= CLIFF_RISE:
+                    # Cliff → forest regardless
                     is_forest = True
-                elif rise >= CLIFF_RISE:
-                    # Cliff → forest
-                    is_forest = True
-                elif parent_streak == 1:
-                    # One forest parent → 95% forest
-                    is_forest = rng_biome.random() < 0.95
                 else:
-                    # Exponential probability — but REDUCED on flat terrain
-                    # Flat land (low rise_per_tile) stays sandy longer
-                    # Base: exponential with depth
+                    # Base probability from depth
                     prob = 1.0 - math.exp(-0.35 * depth)
+
                     # Elevation boost: steeper terrain → forest sooner
                     elev_boost = min(0.3, rise * 3.0)
                     prob = min(1.0, prob + elev_boost)
-                    # Flat terrain penalty: if barely gaining elevation,
-                    # sand spreads further inland
+
+                    # Flat terrain penalty
                     if rise_per_tile < 0.008:
-                        # Very flat — strong penalty, sand persists
                         prob *= 0.3
                     elif rise_per_tile < 0.015:
-                        # Mildly flat — moderate penalty
                         prob *= 0.6
-                    is_forest = rng_biome.random() < prob
+
+                    # Forest streak bonus (but NOT guaranteed)
+                    # Being next to forest helps but doesn't lock it in
+                    if parent_streak >= 3:
+                        prob = min(1.0, prob + 0.3)
+                    elif parent_streak >= 2:
+                        prob = min(1.0, prob + 0.2)
+                    elif parent_streak >= 1:
+                        prob = min(1.0, prob + 0.15)
+
+                    # Low elevation penalty: tiles barely above sea level
+                    # are harder to become forest (sand dominates low ground)
+                    if above_sea < 0.04:
+                        # Within ~1 tile height of ocean — roll with disadvantage
+                        # (roll twice, take the one that favors sand)
+                        roll1 = rng_biome.random()
+                        roll2 = rng_biome.random()
+                        is_forest = max(roll1, roll2) < prob  # max = harder to pass
+                    elif above_sea < 0.08:
+                        # Still low — mild penalty
+                        prob *= 0.7
+                        is_forest = rng_biome.random() < prob
+                    else:
+                        is_forest = rng_biome.random() < prob
 
                 if is_forest:
                     base[nr, nc] = BIOME_REED_BEDS
