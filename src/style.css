@@ -196,6 +196,11 @@ html, body {
   display: block; width: 100%; height: 100%;
   touch-action: none;
 }
+#overlay-canvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
 
 /* ── Side Panel ── */
 #panel {
@@ -828,3 +833,162 @@ html, body {
   margin-top: 1px;
 }
 #hall-close { align-self: flex-end; }
+
+/* ══════════════════════════════════════════════════════════════════
+   ANALYSIS TOOLS
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Analysis Canvases ── */
+.analysis-canvas {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.hist-canvas { height: 300px; }
+.corr-canvas { height: 280px; }
+.region-canvas { height: 320px; }
+
+/* ── Trait Species Selector Bar ── */
+.trait-sp-bar {
+  display: flex; gap: 3px;
+  padding: 2px 0 6px;
+  flex-shrink: 0;
+}
+.trait-sp-btn {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--dim);
+  font-family: var(--mono); font-size: 8px;
+  padding: 3px 2px; cursor: pointer;
+  border-radius: 3px; text-align: center;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.trait-sp-btn:hover { color: var(--text); }
+.trait-sp-btn.active {
+  background: var(--card-hover);
+  color: var(--gold-light);
+  font-weight: 700;
+  border-bottom: 2px solid;
+}
+
+/* ── Correlation Controls ── */
+.corr-controls {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0 4px;
+  flex-shrink: 0;
+}
+.corr-select {
+  flex: 1;
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--mono); font-size: 9px;
+  padding: 3px 4px; border-radius: 3px; cursor: pointer;
+  appearance: none;
+}
+.corr-select:focus { outline: none; border-color: var(--gold); }
+.corr-vs {
+  font-size: 8px; color: var(--dim);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.corr-presets {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  padding: 0 0 6px;
+  flex-shrink: 0;
+}
+.corr-preset-btn {
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--dim); font-family: var(--mono); font-size: 7px;
+  padding: 2px 5px; border-radius: 2px; cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.corr-preset-btn:hover { color: var(--text); border-color: var(--gold); }
+
+/* ── Region Controls ── */
+.region-controls {
+  display: flex; gap: 4px;
+  padding: 2px 0 6px;
+  flex-shrink: 0;
+}
+.region-controls .btn { font-size: 8px; padding: 3px 6px; }
+.region-controls .btn.selecting {
+  background: var(--gold); color: var(--bg);
+  border-color: var(--gold);
+}
+
+/* ── Map Overlay Controls ── */
+.overlay-controls {
+  position: absolute;
+  bottom: 32px; left: 8px;
+  z-index: 10;
+  display: flex; gap: 2px;
+  background: rgba(0,0,0,0.5);
+  padding: 3px;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+}
+.overlay-btn {
+  background: none; border: 1px solid transparent;
+  color: var(--dim);
+  font-family: var(--mono); font-size: 8px;
+  padding: 2px 6px; cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.overlay-btn:hover { color: var(--text); border-color: var(--border); }
+.overlay-btn.active {
+  background: rgba(221,193,101,0.15);
+  color: var(--gold);
+  border-color: rgba(221,193,101,0.3);
+}
+
+/* ── Species Detail Modal ── */
+#species-detail-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+#species-detail-card {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  max-width: 680px; width: 100%;
+  position: relative;
+}
+#species-detail-canvas {
+  width: 100%; height: 380px;
+  border-radius: 4px;
+}
+#species-detail-close {
+  position: absolute;
+  top: 12px; right: 12px;
+  z-index: 2;
+}
+
+/* ── Mobile adjustments for analysis tools ── */
+@media (max-width: 768px) {
+  .hist-canvas { height: 240px; }
+  .corr-canvas { height: 220px; }
+  .region-canvas { height: 260px; }
+  .overlay-controls { bottom: 28px; left: 4px; }
+  .overlay-btn { font-size: 7px; padding: 2px 4px; }
+  #species-detail-canvas { height: 300px; }
+  .trait-sp-btn { font-size: 7px; }
+  .corr-preset-btn { font-size: 6px; }
+}
+@media (max-width: 420px) {
+  .hist-canvas { height: 200px; }
+  .corr-canvas { height: 180px; }
+  .region-canvas { height: 220px; }
+  #species-detail-canvas { height: 260px; }
+}

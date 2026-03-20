@@ -9,6 +9,7 @@ import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedThe
 import { drawPortrait } from './creatures.js';
 import { checkForEntries, getRecent } from './journal.js';
 import { MapRenderer } from './render.js';
+import * as analysis from './analysis.js';
 
 // ── DOM refs ──
 const $ = id => document.getElementById(id);
@@ -139,6 +140,9 @@ document.querySelectorAll('.lab-tab').forEach(btn => {
     if (activeTab === 'selection') renderSelectionCharts();
     if (activeTab === 'life-history') renderLifeHistoryChart();
     if (activeTab === 'stats') renderStatsReadouts();
+    if (activeTab === 'traits') renderTraitsTab();
+    if (activeTab === 'correlations') renderCorrelationsTab();
+    if (activeTab === 'regions') renderRegionsTab();
   });
 });
 
@@ -399,6 +403,49 @@ mapCanvas.addEventListener('dblclick', () => {
   camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
 });
 
+// Map click for region selection (only when in region select mode)
+mapCanvas.addEventListener('click', e => {
+  if (!analysis.getRegionSelectMode()) return;
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout) return;
+
+  const gs = layout.gridSize;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = mapCanvas.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const tileW = (w / gs) * 0.85 * camZoom;
+  const tileH = tileW * camTilt;
+  const heightScale = 80 * camZoom;
+  const offsetX = w / 2 + camPanX;
+  const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
+
+  // Reverse isometric: find closest tile to click position
+  // Approximate by ignoring elevation (flat grid)
+  let bestDist = Infinity, bestR = -1, bestC = -1;
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      const idx = r * gs + c;
+      const elev = views.elevations[idx];
+      const ix = (c - r) * tileW * 0.5;
+      const iy = (c + r) * tileH * 0.5;
+      const iz = elev * heightScale;
+      const sx = offsetX + ix;
+      const sy = offsetY + iy - iz;
+      const dist = (sx - mx) ** 2 + (sy - my) ** 2;
+      if (dist < bestDist) { bestDist = dist; bestR = r; bestC = c; }
+    }
+  }
+  if (bestR >= 0) {
+    analysis.setRegionTile(bestR, bestC);
+    if (activeTab === 'regions') renderRegionsTab();
+  }
+});
+
 // Q/E to rotate 90°, P to toggle population overlay
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -522,6 +569,12 @@ function startRenderLoop() {
       if (activeTab === 'selection') renderSelectionCharts();
       if (activeTab === 'life-history') renderLifeHistoryChart();
       if (activeTab === 'stats') renderStatsReadouts();
+      if (activeTab === 'traits') renderTraitsTab();
+      if (activeTab === 'correlations') renderCorrelationsTab();
+      if (activeTab === 'regions') renderRegionsTab();
+
+      // Overlay data snapshot (for migration tracking)
+      analysis.snapshotPopulations(views, sim.getLayout());
     }
 
     // Render map (every frame — camera might move)
@@ -538,6 +591,8 @@ function startRenderLoop() {
         { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotSteps: camRotation },
         getBiomeColors()
       );
+      // WebGL overlay rendering on separate canvas
+      renderWebGLOverlay(views);
     } else {
       // Canvas 2D fallback
       renderMap(views);
@@ -568,6 +623,9 @@ function renderMap(views) {
 
   const offsetX = w / 2 + camPanX;
   const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
+
+  // Compute overlay data for analysis overlays
+  const overlayData = analysis.computeOverlayData(views, sim.getLayout());
 
   // Water level plane
   const WATER_LEVEL = 0.20;  // sea level in normalized elevation
@@ -689,6 +747,20 @@ function renderMap(views) {
         }
       }
 
+      // Analysis overlay
+      if (overlayData) {
+        const overlayColor = analysis.getOverlayColor(overlayData[idx]);
+        if (overlayColor) {
+          const oBase = underwater ? isoXY(r, c, WATER_LEVEL) : s;
+          const oT = { x: oBase.x, y: oBase.y - tileH * 0.5 };
+          const oR = { x: oBase.x + tileW * 0.5, y: oBase.y };
+          const oB = { x: oBase.x, y: oBase.y + tileH * 0.5 };
+          const oL = { x: oBase.x - tileW * 0.5, y: oBase.y };
+          ctx.fillStyle = overlayColor;
+          quad(oT.x,oT.y, oR.x,oR.y, oB.x,oB.y, oL.x,oL.y);
+        }
+      }
+
       // Species overlay (on water level for underwater, terrain for land)
       const pBase = underwater ? isoXY(r, c, WATER_LEVEL) : s;
       let maxPop = 0, maxS = -1;
@@ -774,6 +846,60 @@ function renderMap(views) {
   grad.addColorStop(1, 'rgba(0,0,0,0.5)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
+}
+
+// ── WebGL overlay (drawn on separate canvas for analysis overlays) ──
+function renderWebGLOverlay(views) {
+  const overlayCanvas = document.getElementById('overlay-canvas');
+  if (!overlayCanvas) return;
+  const overlayData = analysis.computeOverlayData(views, sim.getLayout());
+  const dpr = window.devicePixelRatio || 1;
+  const mapRect = mapCanvas.parentElement.getBoundingClientRect();
+
+  if (overlayCanvas.width !== mapRect.width * dpr || overlayCanvas.height !== mapRect.height * dpr) {
+    overlayCanvas.width = mapRect.width * dpr;
+    overlayCanvas.height = mapRect.height * dpr;
+    overlayCanvas.style.width = mapRect.width + 'px';
+    overlayCanvas.style.height = mapRect.height + 'px';
+  }
+
+  const ctx = overlayCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = mapRect.width;
+  const h = mapRect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!overlayData) return;
+
+  const gs = sim.getLayout().gridSize;
+  const tileW = (w / gs) * 0.85 * camZoom;
+  const tileH = tileW * camTilt;
+  const heightScale = 80 * camZoom;
+  const WATER_LEVEL = 0.20;
+  const offsetX = w / 2 + camPanX;
+  const offsetY = (h - gs * tileH * 0.5 + heightScale) / 2 + camPanY;
+
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      const idx = r * gs + c;
+      const color = analysis.getOverlayColor(overlayData[idx]);
+      if (!color) continue;
+      const elev = Math.max(views.elevations[idx], WATER_LEVEL);
+      const ix = (c - r) * tileW * 0.5;
+      const iy = (c + r) * tileH * 0.5;
+      const iz = elev * heightScale;
+      const sx = offsetX + ix;
+      const sy = offsetY + iy - iz;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - tileH * 0.5);
+      ctx.lineTo(sx + tileW * 0.5, sy);
+      ctx.lineTo(sx, sy + tileH * 0.5);
+      ctx.lineTo(sx - tileW * 0.5, sy);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
 }
 
 // ── Pentagon / Radar diagram ──
@@ -1038,6 +1164,10 @@ function renderSpeciesCards(totalPops) {
       canvas.style.width = '40px';
       canvas.style.height = '40px';
       portraitCanvases.push(canvas);
+      // Click species card to open detail
+      const card = $(`sp-card-${s}`);
+      card.style.cursor = 'pointer';
+      card.addEventListener('click', () => showSpeciesDetail(s));
     }
   }
 
@@ -1714,6 +1844,11 @@ $('end-new').addEventListener('click', () => {
   challengeState = resetChallengeState();
   currentGen = 0;
   $('challenge-badge').classList.add('hidden');
+  analysis.clearRegions();
+  analysis.setOverlay('none');
+  traitsTabInitialized = false;
+  corrTabInitialized = false;
+  document.querySelectorAll('.overlay-btn').forEach(b => b.classList.toggle('active', b.dataset.overlay === 'none'));
   seedInput.value = generateSeed();
   renderPreview();
 });
@@ -1859,6 +1994,132 @@ btnLoadSave.addEventListener('click', async () => {
     console.error(err);
   }
 });
+
+// ── Analysis tools wiring ──
+
+// Traits tab
+let traitsTabInitialized = false;
+function renderTraitsTab() {
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout) return;
+  const canvas = document.getElementById('trait-hist-canvas');
+  if (!traitsTabInitialized) {
+    traitsTabInitialized = true;
+    const container = document.getElementById('trait-species-selector');
+    analysis.renderTraitSpeciesSelector(container, () => renderTraitsTab());
+  }
+  analysis.renderTraitHistograms(canvas, views, layout);
+}
+
+// Correlations tab
+let corrTabInitialized = false;
+function renderCorrelationsTab() {
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout) return;
+  const canvas = document.getElementById('corr-canvas');
+  if (!corrTabInitialized) {
+    corrTabInitialized = true;
+    const sx = document.getElementById('corr-x');
+    const sy = document.getElementById('corr-y');
+    analysis.populateMetricSelectors(sx, sy, () => renderCorrelationsTab());
+    // Preset buttons
+    const presetsEl = document.getElementById('corr-presets');
+    for (const preset of analysis.getPresets()) {
+      const btn = document.createElement('button');
+      btn.className = 'corr-preset-btn';
+      btn.textContent = preset.label;
+      btn.addEventListener('click', () => {
+        analysis.applyPreset(preset, sx, sy, () => renderCorrelationsTab());
+      });
+      presetsEl.appendChild(btn);
+    }
+  }
+  analysis.renderCorrelationPlot(canvas, views, layout);
+}
+
+// Regions tab
+function renderRegionsTab() {
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout) return;
+  const canvas = document.getElementById('region-canvas');
+  analysis.renderRegionComparison(canvas, views, layout);
+  // Update button states
+  const mode = analysis.getRegionSelectMode();
+  const btnA = document.getElementById('btn-region-a');
+  const btnB = document.getElementById('btn-region-b');
+  btnA.classList.toggle('selecting', mode === 'a');
+  btnB.classList.toggle('selecting', mode === 'b');
+}
+
+document.getElementById('btn-region-a')?.addEventListener('click', () => {
+  analysis.startRegionSelect('a');
+  renderRegionsTab();
+});
+document.getElementById('btn-region-b')?.addEventListener('click', () => {
+  analysis.startRegionSelect('b');
+  renderRegionsTab();
+});
+document.getElementById('btn-region-clear')?.addEventListener('click', () => {
+  analysis.clearRegions();
+  renderRegionsTab();
+});
+
+// Map overlay controls
+document.querySelectorAll('.overlay-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.overlay-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    analysis.setOverlay(btn.dataset.overlay);
+  });
+});
+
+// Species detail modal
+const speciesDetailOverlay = $('species-detail-overlay');
+const speciesDetailCanvas = $('species-detail-canvas');
+
+function showSpeciesDetail(speciesIdx) {
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout) return;
+  const detail = analysis.computeSpeciesDetail(views, layout, speciesIdx, popHistory, traitHistory);
+  // Size canvas for HiDPI
+  const dpr = window.devicePixelRatio || 1;
+  const rect = speciesDetailCanvas.getBoundingClientRect();
+  speciesDetailCanvas.width = rect.width * dpr;
+  speciesDetailCanvas.height = rect.height * dpr;
+  analysis.renderSpeciesDetail(speciesDetailCanvas, detail, drawPortrait);
+  speciesDetailOverlay.classList.remove('hidden');
+}
+
+$('species-detail-close').addEventListener('click', () => speciesDetailOverlay.classList.add('hidden'));
+speciesDetailOverlay.addEventListener('click', e => {
+  if (e.target === speciesDetailOverlay) speciesDetailOverlay.classList.add('hidden');
+});
+
+// Help content for new tabs
+HELP_CONTENT.traits = {
+  title: 'Trait Distributions',
+  body: `<p>Each histogram shows how a trait is distributed across the population of the selected species.</p>
+<p>A tall, narrow distribution means the species is genetically uniform for that trait — strong selection has pushed everyone toward a similar value.</p>
+<p>A wide or <strong>bimodal</strong> (two-peaked) distribution means the population is diverging — a precursor to <strong>speciation</strong>.</p>
+<p>The dashed line shows the <strong>mean (μ)</strong>. The shaded band shows <strong>±1 standard deviation (σ)</strong>. Skew indicates asymmetry in the distribution.</p>`,
+};
+HELP_CONTENT.correlations = {
+  title: 'Correlation Explorer',
+  body: `<p>The scatter plot shows the relationship between any two metrics across all tiles.</p>
+<p>Each dot is one tile with a non-zero species population. Color = species, size = population.</p>
+<p>The dashed line is a <strong>linear regression</strong>. <strong>R²</strong> measures how much of the variation in Y is explained by X (0 = no correlation, 1 = perfect).</p>
+<p>Try the presets to discover emergent tradeoffs — does shell thickness really correlate with tidal zones? Does metabolism track vegetation?</p>`,
+};
+HELP_CONTENT.regions = {
+  title: 'Region Comparison',
+  body: `<p>Compare two tiles side-by-side to detect local adaptation, population divergence, and early speciation.</p>
+<p>Select two tiles by clicking the buttons, then clicking tiles on the map. The panel shows population counts, trait values, and <strong>genetic distance</strong> between subpopulations.</p>
+<p>High genetic distance between isolated regions suggests speciation may be underway.</p>`,
+};
 
 // ── Init ──
 const savedTheme = loadSavedTheme();

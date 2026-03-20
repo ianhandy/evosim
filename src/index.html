@@ -80,11 +80,22 @@
         <div id="epoch-name"></div>
       </div>
       <canvas id="map-canvas"></canvas>
+      <canvas id="overlay-canvas"></canvas>
+      <div id="overlay-controls" class="overlay-controls">
+        <button class="overlay-btn active" data-overlay="none">Off</button>
+        <button class="overlay-btn" data-overlay="diversity">Diversity</button>
+        <button class="overlay-btn" data-overlay="predation">Predation</button>
+        <button class="overlay-btn" data-overlay="vegetation-stress">Stress</button>
+        <button class="overlay-btn" data-overlay="migration">Migration</button>
+      </div>
       <div class="map-hint" id="map-hint">Drag to pan · Scroll to zoom · Right-drag to tilt · Double-click to reset</div>
     </section>
     <aside id="panel">
       <div id="lab-tabs">
         <button class="lab-tab active" data-tab="overview">Overview</button>
+        <button class="lab-tab" data-tab="traits">Traits</button>
+        <button class="lab-tab" data-tab="correlations">Correlations</button>
+        <button class="lab-tab" data-tab="regions">Regions</button>
         <button class="lab-tab" data-tab="selection">Selection</button>
         <button class="lab-tab" data-tab="life-history">Life History</button>
         <button class="lab-tab" data-tab="stats">Stats</button>
@@ -121,6 +132,42 @@
           </div>
           <div id="graveyard-entries"></div>
         </div>
+      </div>
+
+      <div id="tab-traits" class="tab-content">
+        <div class="panel-header">
+          <span class="panel-title">Trait Distributions</span>
+          <button class="help-btn" data-help="traits">?</button>
+        </div>
+        <div id="trait-species-selector" class="trait-sp-bar"></div>
+        <canvas id="trait-hist-canvas" class="analysis-canvas hist-canvas"></canvas>
+      </div>
+
+      <div id="tab-correlations" class="tab-content">
+        <div class="panel-header">
+          <span class="panel-title">Correlation Explorer</span>
+          <button class="help-btn" data-help="correlations">?</button>
+        </div>
+        <div class="corr-controls">
+          <select id="corr-x" class="corr-select"></select>
+          <span class="corr-vs">vs</span>
+          <select id="corr-y" class="corr-select"></select>
+        </div>
+        <div id="corr-presets" class="corr-presets"></div>
+        <canvas id="corr-canvas" class="analysis-canvas corr-canvas"></canvas>
+      </div>
+
+      <div id="tab-regions" class="tab-content">
+        <div class="panel-header">
+          <span class="panel-title">Region Comparison</span>
+          <button class="help-btn" data-help="regions">?</button>
+        </div>
+        <div class="region-controls">
+          <button class="btn btn-small" id="btn-region-a">Select Region A</button>
+          <button class="btn btn-small" id="btn-region-b">Select Region B</button>
+          <button class="btn btn-small" id="btn-region-clear">Clear</button>
+        </div>
+        <canvas id="region-canvas" class="analysis-canvas region-canvas"></canvas>
       </div>
 
       <div id="tab-selection" class="tab-content">
@@ -167,6 +214,14 @@
     <div id="eulogy-stats"></div>
     <canvas id="eulogy-sparkline" width="200" height="40"></canvas>
     <button class="btn" id="eulogy-dismiss">Continue Observation</button>
+  </div>
+</div>
+
+<!-- SPECIES DETAIL MODAL -->
+<div id="species-detail-overlay" class="hidden">
+  <div id="species-detail-card">
+    <canvas id="species-detail-canvas"></canvas>
+    <button class="btn btn-small" id="species-detail-close">Close</button>
   </div>
 </div>
 
