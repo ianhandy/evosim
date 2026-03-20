@@ -257,23 +257,21 @@ const FRAG_SRC = `
   void main() {
     int biome = int(v_biome + 0.5);
 
-    // ── Water tile side faces: render as translucent water walls ──
-    if (biome <= 1 && v_faceType > 0.5 && v_faceType < 2.5) {
+    // Use elevation for water detection (more reliable than biome texture)
+    bool isWaterFrag = v_elev < 0.20;
+
+    // ── Water tile side faces: translucent blue walls ──
+    if (isWaterFrag && v_faceType > 0.5 && v_faceType < 2.5) {
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      vec3 waterSide = vec3(
-        (10.0 + (1.0 - depth) * 40.0) / 255.0,
-        (50.0 + (1.0 - depth) * 60.0) / 255.0,
-        (100.0 + (1.0 - depth) * 50.0) / 255.0
-      );
-      // Darken toward the bottom of the pillar
-      waterSide *= (1.0 - v_pillarT * 0.4);
-      gl_FragColor = vec4(waterSide, 0.7);
+      vec3 waterSide = vec3(0.04, 0.12, 0.25) + vec3(0.06, 0.10, 0.12) * (1.0 - depth);
+      waterSide *= (1.0 - v_pillarT * 0.5);
+      gl_FragColor = vec4(waterSide, 0.75);
       return;
     }
 
     // ── Water surface (face type 3) ──
     if (v_faceType > 2.5) {
-      if (biome > 1) discard;
+      if (!isWaterFrag) discard;
 
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
       float caustic = 0.5 + 0.5 * sin(v_dither * 40.0 + u_time * 2.0);
@@ -415,7 +413,7 @@ const FRAG_SRC = `
     color *= shade;
 
     // Underwater seafloor tint
-    if (biome <= 1 && v_faceType < 0.5) {
+    if (isWaterFrag && v_faceType < 0.5) {
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
       color *= (0.4 + 0.6 * (1.0 - depth));
       color += vec3(0.0, 0.02, 0.06) * depth;

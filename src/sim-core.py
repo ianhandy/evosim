@@ -59,6 +59,9 @@ first_seen_gen = [0] * NUM_SPECIES
 last_seen_tile = [(0, 0)] * NUM_SPECIES
 pop_history_window = [[0] * 100 for _ in range(NUM_SPECIES)]  # rolling 100-gen window
 
+# Designated volcano positions (set during terrain gen, eruptions only here)
+designated_volcanoes = []
+
 # Epoch system
 current_epoch = 'the_quiet'
 epoch_since = 0
@@ -520,6 +523,7 @@ def _generate_terrain(seed_str):
 
             if 0 <= pr < gs and 0 <= pc < gs:
                 tile_flags[pr, pc] |= 2
+                designated_volcanoes.append((pr, pc))
 
         # ── Peak-to-peak ridgelines ──
         # Connect nearby peaks with elevated terrain along the fault direction.
@@ -537,17 +541,20 @@ def _generate_terrain(seed_str):
                 if dist_peaks < 1:
                     continue
                 ndx, ndy = dx / dist_peaks, dy / dist_peaks
-                ridge_h = min(h1, h2) * rng.uniform(0.3, 0.6)
+                # Ridge height = shorter peak's height, maintained throughout
+                # (slight sag of ~10-20% in the middle, not a big dip)
+                ridge_h = min(h1, h2) * rng.uniform(0.6, 0.9)
                 ridge_w = max(1.5, (rad1 + rad2) * 0.08)
 
                 along = (rows_v - pr1) * ndx + (cols_v - pc1) * ndy
                 perp = np.abs((rows_v - pr1) * (-ndy) + (cols_v - pc1) * ndx)
                 in_ridge = (along > 0) & (along < dist_peaks) & (perp < ridge_w)
 
-                # Height peaks in the middle, dips at the endpoints
-                mid_t = 1 - np.abs(along / dist_peaks - 0.5) * 2
+                # Nearly constant height with slight saddle (10-20% dip at center)
+                along_t = np.clip(along / dist_peaks, 0, 1)
+                saddle = 1.0 - np.abs(along_t - 0.5) * 0.3  # 85-100% height
                 p_t = np.clip(1 - perp / ridge_w, 0, 1)
-                spine = ridge_h * mid_t * p_t
+                spine = ridge_h * saddle * p_t
 
                 grid += np.where(in_ridge, spine, 0)
 
@@ -612,9 +619,21 @@ def _update_biomes_incremental():
     rose = (biomes <= 1) & (elevations >= SEA_LEVEL)
     biomes[rose] = BIOME_TIDAL_FLATS
 
-    # Volcanic summit tiles → rocky
+    # Volcanic tiles: rocky if steep, forest can regrow on gentle slopes
+    # Compute slope for volcanic tiles
+    padded_e = np.pad(elevations, 1, mode='edge')
+    max_slope = np.zeros((gs, gs), dtype=np.float32)
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+        nb = padded_e[1+dr:gs+1+dr, 1+dc:gs+1+dc]
+        max_slope = np.maximum(max_slope, np.abs(elevations - nb))
+
     volcanic = (tile_flags & 2) > 0
-    biomes[volcanic & (elevations >= SEA_LEVEL)] = BIOME_ROCKY_SHORE
+    # Steep volcanic = stays rocky; gentle volcanic = can become forest
+    steep_volcanic = volcanic & (max_slope > 0.03) & (elevations >= SEA_LEVEL)
+    biomes[steep_volcanic] = BIOME_ROCKY_SHORE
+    # Gentle volcanic with enough vegetation → forest regrowth
+    gentle_volcanic = volcanic & (max_slope <= 0.03) & (elevations >= SEA_LEVEL) & (vegetation > 0.4)
+    biomes[gentle_volcanic] = BIOME_REED_BEDS
 
 
 def _assign_biomes():
@@ -645,16 +664,31 @@ def _assign_biomes():
     # Default all land to forest
     base[is_land] = BIOME_REED_BEDS
 
-    # Rocky ONLY on volcanic-flagged tiles and their immediate neighbors
-    # (peaks, ridge spines, lava deposits — NOT all high-elevation land)
+    # ── Rocky tiles: steepness + volcanic proximity ──
+    # Trees can't grow on very steep slopes. Combine slope steepness
+    # with volcanic flag proximity to determine rocky tiles.
+    # Compute max elevation difference to any neighbor (steepness)
+    padded_elev = np.pad(elevations, 1, mode='edge')
+    max_slope = np.zeros((gs, gs), dtype=np.float32)
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+        neighbor = padded_elev[1+dr:gs+1+dr, 1+dc:gs+1+dc]
+        max_slope = np.maximum(max_slope, np.abs(elevations - neighbor))
+
+    # Rocky if: steep slope AND (near volcano OR very steep)
     volcanic = (tile_flags & 2) > 0
     vol_padded = np.pad(volcanic.astype(np.float32), 1, mode='constant')
     near_volcanic = (vol_padded[:-2, 1:-1] + vol_padded[2:, 1:-1] +
                      vol_padded[1:-1, :-2] + vol_padded[1:-1, 2:] +
                      vol_padded[:-2, :-2] + vol_padded[:-2, 2:] +
                      vol_padded[2:, :-2] + vol_padded[2:, 2:]) > 0
-    rocky_mask = is_land & (volcanic | (near_volcanic & (elevations >= 0.50)))
-    base[rocky_mask] = BIOME_ROCKY_SHORE
+    # Steep enough that trees can't hold: slope > 0.06
+    # Near volcano + moderate slope: slope > 0.03
+    steep_rocky = is_land & (max_slope > 0.06)
+    volcanic_rocky = is_land & near_volcanic & (max_slope > 0.03)
+    summit_rocky = is_land & volcanic
+    # Forest can regrow on old lava if slope is gentle
+    # (volcanic flag stays but biome can become forest if slope < 0.03)
+    base[steep_rocky | volcanic_rocky | summit_rocky] = BIOME_ROCKY_SHORE
 
     # Find coastal tiles (land adjacent to water, 8-neighbor)
     is_water = (~is_land).astype(np.float32)
@@ -1752,16 +1786,14 @@ def _update_tectonics():
 
 def _volcanic_eruption(plate):
     """
-    Volcanic event at a random boundary tile.
-    Instant terrain transform: elevation spike, temperature spike, food crash.
-    See evolution-simulation-research.md §12.9
+    Volcanic eruption at a designated volcano summit.
+    Only erupts from volcanoes placed during terrain generation.
     """
-    boundaries = _get_plate_boundaries()
-    plate_boundaries = [(r, c) for r, c, pid in boundaries if pid == plate['id']]
-    if not plate_boundaries:
+    if not designated_volcanoes:
         return
 
-    vr, vc = random.choice(plate_boundaries)
+    # Pick a random designated volcano
+    vr, vc = random.choice(designated_volcanoes)
 
     # Elevation spike at epicenter
     elevations[vr, vc] = min(1.0, elevations[vr, vc] + 0.3)
