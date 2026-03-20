@@ -120,17 +120,8 @@ const VERT_SRC = `
     float floorIz = floorElev * hScale;
     float pillarH = max(0.0, sideTopIz - floorIz);
 
-    // Check if this water tile needs side faces:
-    // Only at map edges or adjacent to land tiles
+    // Water tiles always render side faces to prevent jagged gaps at coastlines
     bool waterNeedsSides = true;
-    if (isWater) {
-      // If all 4 neighbors are also water, skip side faces
-      bool allWaterNeighbors = eN < WATER_LEVEL && eS < WATER_LEVEL
-                            && eW < WATER_LEVEL && eE < WATER_LEVEL;
-      // Also need sides at grid edges
-      bool atEdge = row < 0.5 || col < 0.5 || row > gs - 1.5 || col > gs - 1.5;
-      waterNeedsSides = !allWaterNeighbors || atEdge;
-    }
 
     vec2 pos;
     v_pillarT = 0.0;

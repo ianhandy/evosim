@@ -379,52 +379,121 @@ def _generate_terrain(seed_str):
         (detail - 0.5) * 0.08 + (medium - 0.5) * 0.06 + (coarse - 0.5) * 0.04,
         (detail - 0.5) * 0.02)
 
-    # ── Volcanoes — sharp conical peaks on the highest terrain ──
-    # Find the top N elevation tiles and place steep volcanic cones there.
-    # These are the geological hotspots that built the island — their peaks
-    # should visibly rise above the surrounding terrain.
+    # ── Mountain ranges along fault lines ──
+    # Peaks cluster along tectonic fault lines, forming visible ranges.
+    # Each peak also has ridge veins that protrude along the fault direction.
+    #
+    # The fault data was generated on the oversized canvas (igs×igs).
+    # We need to remap fault positions to the final gs×gs grid after crop+resample.
+    # Since we cropped centered on the land, approximate by scaling fault coords.
     land_elev = np.where(grid > 0, grid, 0)
-    if land_elev.max() > 0:
-        # Number of volcanoes scales with grid size
-        num_volcanoes = max(2, gs // 12)
-        # Find peak candidates — local maxima above 70th percentile of land
-        land_vals = grid[grid > 0]
-        if len(land_vals) > 0:
-            threshold = np.percentile(land_vals, 70)
-            peak_mask = grid > threshold
-            peak_coords = np.argwhere(peak_mask)
-            if len(peak_coords) > num_volcanoes:
-                # Spread them out — pick peaks with maximum spacing
-                chosen = [peak_coords[rng.randint(0, len(peak_coords))]]
-                for _ in range(num_volcanoes - 1):
-                    dists = np.array([
-                        min(abs(p[0] - c[0]) + abs(p[1] - c[1]) for c in chosen)
-                        for p in peak_coords
-                    ])
-                    chosen.append(peak_coords[np.argmax(dists)])
-                peak_coords = np.array(chosen)
+    if land_elev.max() > 0 and len(land_coords_crop) > 0:
+        lr_min_v, lc_min_v = land_coords_crop.min(axis=0)
+        lr_max_v, lc_max_v = land_coords_crop.max(axis=0)
 
-            rows_v = np.arange(gs)[:, None]
-            cols_v = np.arange(gs)[None, :]
-            for pr, pc in peak_coords[:num_volcanoes]:
-                pr, pc = int(pr), int(pc)
-                # Volcano radius and height scale with local elevation
-                local_elev = grid[pr, pc]
-                v_radius = rng.uniform(gs * 0.08, gs * 0.16)
-                v_height = rng.uniform(0.08, 0.18) * (0.5 + local_elev)
-                dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
-                in_cone = dist < v_radius
-                # Smooth bell-shaped profile (gentler than squared falloff)
-                t = 1 - dist / v_radius
-                cone = v_height * t * t * (3 - 2 * t)  # smoothstep profile
-                # Slight caldera depression at the very peak
-                caldera_r = v_radius * 0.2
-                caldera_dip = np.where(dist < caldera_r,
-                    v_height * 0.1 * (1 - dist / caldera_r), 0)
-                grid += np.where(in_cone, cone - caldera_dip, 0)
-                # Mark the summit tile as volcanic
-                if 0 <= pr < gs and 0 <= pc < gs:
-                    tile_flags[pr, pc] |= 2
+        num_peaks = max(3, gs // 10)
+        rows_v = np.arange(gs)[:, None]
+        cols_v = np.arange(gs)[None, :]
+
+        # Place peaks along fault lines (remapped to final grid)
+        # Scale factor from oversized canvas to final grid
+        crop_extent = max(lr_max_v - lr_min_v + 1, lc_max_v - lc_min_v + 1)
+        scale = gs / max(1, crop_extent / 0.65)  # inverse of the crop ratio
+
+        peaks_placed = []
+        for fault in faults:
+            fx, fy, fdx, fdy = fault
+            # Remap fault center to final grid coords (approximate)
+            ffx = (fx - lr_min_v) * scale * 0.65
+            ffy = (fy - lc_min_v) * scale * 0.65
+            # Place 2-4 peaks along each fault line
+            n_on_fault = rng.randint(2, 5)
+            for _ in range(n_on_fault):
+                if len(peaks_placed) >= num_peaks:
+                    break
+                # Position along the fault + perpendicular jitter
+                t_along = rng.uniform(-gs * 0.3, gs * 0.3)
+                jitter = rng.uniform(-gs * 0.03, gs * 0.03)
+                pr = int(ffx + fdx * t_along + fdy * jitter)
+                pc = int(ffy + fdy * t_along - fdx * jitter)
+                pr = max(2, min(gs - 3, pr))
+                pc = max(2, min(gs - 3, pc))
+                # Only place on land
+                if grid[pr, pc] <= 0:
+                    continue
+                # Min spacing from existing peaks
+                if any(abs(pr - er) + abs(pc - ec) < gs // 8 for er, ec in peaks_placed):
+                    continue
+                peaks_placed.append((pr, pc))
+
+        # Also add a few peaks at high-elevation spots not on fault lines
+        land_vals = grid[grid > 0]
+        if len(land_vals) > 0 and len(peaks_placed) < num_peaks:
+            threshold = np.percentile(land_vals, 80)
+            extra_mask = (grid > threshold)
+            extra_coords = np.argwhere(extra_mask)
+            for coord in extra_coords:
+                if len(peaks_placed) >= num_peaks:
+                    break
+                er, ec = int(coord[0]), int(coord[1])
+                if any(abs(er - pr) + abs(ec - pc) < gs // 8 for pr, pc in peaks_placed):
+                    continue
+                peaks_placed.append((er, ec))
+
+        # Build each peak with ridge veins
+        for pi, (pr, pc) in enumerate(peaks_placed):
+            local_elev = grid[pr, pc]
+            v_radius = rng.uniform(gs * 0.08, gs * 0.16)
+            v_height = rng.uniform(0.08, 0.18) * (0.5 + local_elev)
+            dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
+            in_cone = dist < v_radius
+
+            # Smooth bell-shaped profile
+            t = np.clip(1 - dist / v_radius, 0, 1)
+            cone = v_height * t * t * (3 - 2 * t)
+
+            # Caldera depression
+            caldera_r = v_radius * 0.2
+            caldera_dip = np.where(dist < caldera_r,
+                v_height * 0.1 * (1 - dist / caldera_r), 0)
+
+            # ── Ridge veins: elongated bumps along the fault direction ──
+            # Use the nearest fault's direction for vein orientation
+            best_fault = faults[0] if faults else (0, 0, 1, 0)
+            if len(faults) > 1:
+                best_dist = 999
+                for f in faults:
+                    fd = abs((pr - f[0] * scale * 0.65) * f[3] - (pc - f[1] * scale * 0.65) * f[2])
+                    if fd < best_dist:
+                        best_dist = fd
+                        best_fault = f
+            _, _, vdx, vdy = best_fault
+
+            # 2-3 ridge veins per peak, extending outward along fault direction
+            for vi in range(rng.randint(2, 4)):
+                # Alternate sides of the peak
+                side = 1.0 if vi % 2 == 0 else -1.0
+                # Vein angle: along fault ± some spread
+                vein_angle = math.atan2(vdy, vdx) + side * rng.uniform(0.3, 1.2)
+                vein_dx = math.cos(vein_angle)
+                vein_dy = math.sin(vein_angle)
+                vein_len = v_radius * rng.uniform(0.8, 1.5)
+                vein_width = v_radius * rng.uniform(0.15, 0.3)
+                vein_height = v_height * rng.uniform(0.15, 0.35)
+
+                # Vein: distance along direction and perpendicular
+                along = (rows_v - pr) * vein_dx + (cols_v - pc) * vein_dy
+                perp = np.abs((rows_v - pr) * (-vein_dy) + (cols_v - pc) * vein_dx)
+                in_vein = (along > 0) & (along < vein_len) & (perp < vein_width)
+                vein_t = np.clip(1 - along / vein_len, 0, 1)
+                vein_p = np.clip(1 - perp / vein_width, 0, 1)
+                vein_elev = vein_height * vein_t * vein_p
+                grid += np.where(in_vein, vein_elev, 0)
+
+            grid += np.where(in_cone, cone - caldera_dip, 0)
+
+            if 0 <= pr < gs and 0 <= pc < gs:
+                tile_flags[pr, pc] |= 2
 
     # ── Edge ramp — smoothly slope terrain into ocean near grid edges ──
     # Applied on raw grid (before normalization) so the terrain itself
@@ -568,6 +637,13 @@ def _assign_biomes():
             if 0 <= nr < gs and 0 <= nc < gs and not visited[nr, nc] and is_land[nr, nc]:
                 visited[nr, nc] = True
                 n_elev = float(elevations[nr, nc])
+
+                # Skip tiles already marked as rocky shore (high peaks)
+                if base[nr, nc] == BIOME_ROCKY_SHORE:
+                    forest_streak[nr, nc] = 2  # treat as forest for neighbors
+                    queue.append((nr, nc))
+                    continue
+
                 depth = parent_depth + 1
                 tile_depth[nr, nc] = depth
                 coast_baseline[nr, nc] = baseline
