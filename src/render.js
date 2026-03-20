@@ -33,7 +33,6 @@ const VERT_SRC = `
   uniform sampler2D u_biomes;
   uniform sampler2D u_popTex;
   uniform sampler2D u_vegetation;
-  uniform sampler2D u_tileFlags;
   uniform float u_popMode;
 
   varying float v_shade;
@@ -47,8 +46,6 @@ const VERT_SRC = `
   varying float v_coastal;
   varying vec2 v_quadPos;         // position within tile (0-1)
   varying float v_forestDensity;  // how forested the neighborhood is (0-1)
-  varying float v_flags;          // tile flags (river=1, volcanic=2)
-  varying vec2 v_flowDir;         // flow direction based on elevation gradient
 
   void main() {
     float gs = u_gridSize;
@@ -179,15 +176,6 @@ const VERT_SRC = `
     v_faceType = a_faceType;
     v_quadPos = a_quad;
 
-    // Tile flags: river (bit 0), volcanic (bit 1)
-    v_flags = texture2D(u_tileFlags, texCoord).r * 255.0;
-
-    // Flow direction: downhill gradient from neighbor elevations
-    // Used for animating river/lava flow across the tile surface
-    float eE_flow = texture2D(u_elevations, texCoord + vec2(texel, 0.0)).r;
-    float eS_flow = texture2D(u_elevations, texCoord + vec2(0.0, texel)).r;
-    v_flowDir = normalize(vec2(elev - eE_flow, elev - eS_flow) + 0.001);
-
     // Forest density: count how many of the 4 direct neighbors are forest (biome 2)
     // BIOME_REED_BEDS = 2, encoded as 2/255 ≈ 0.0078 in texture
     float forestSelf = abs(v_biome - 2.0) < 0.5 ? 1.0 : 0.0;
@@ -215,8 +203,6 @@ const FRAG_SRC = `
   varying float v_coastal;
   varying vec2 v_quadPos;
   varying float v_forestDensity;
-  varying float v_flags;
-  varying vec2 v_flowDir;
 
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
@@ -308,71 +294,6 @@ const FRAG_SRC = `
         if (v_coastal > 0.3 && n3 > 0.7) {
           color *= 0.92; // darker wet spot
         }
-      } else if (biome == 4) {
-        // Rocky/volcanic tiles: cracked dark rock texture
-        vec3 darkRock = vec3(0.08, 0.06, 0.05);
-        vec3 lightRock = vec3(0.16, 0.12, 0.10);
-        // Craggy pattern from noise
-        float rockPattern = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
-        color = mix(darkRock, lightRock, rockPattern);
-        // Cracks: dark lines where noise transitions sharply
-        float crack = abs(n1 - n2);
-        if (crack < 0.08) {
-          color *= 0.6; // dark crack
-        }
-        // Volcanic glow: subtle orange in cracks for volcanic tiles
-        float flagsHere = v_flags;
-        if (flagsHere > 1.5 && crack < 0.12) {
-          float glow = (0.12 - crack) / 0.12;
-          color += vec3(0.3, 0.08, 0.0) * glow * (0.5 + 0.5 * sin(u_time * 2.0 + v_dither * 10.0));
-        }
-      }
-    }
-
-    // ── River and lava flow (top faces only) ──
-    if (v_faceType < 0.5) {
-      float flags = v_flags;
-      bool hasRiver = flags > 0.5 && flags < 1.5 || flags > 2.5;  // bit 0
-      bool hasVolcanic = flags > 1.5;                                // bit 1
-
-      if (hasRiver) {
-        // River: animated water flow across the tile
-        // Flow follows elevation gradient (v_flowDir)
-        float flowPhase = dot(v_quadPos, v_flowDir) * 3.0 - u_time * 1.2;
-        float flow = 0.5 + 0.5 * sin(flowPhase * 6.28);
-        float ripple = 0.5 + 0.5 * sin(flowPhase * 12.56 + v_dither * 20.0);
-
-        vec3 riverDeep = vec3(0.06, 0.18, 0.38);
-        vec3 riverLight = vec3(0.12, 0.30, 0.50);
-        vec3 riverColor = mix(riverDeep, riverLight, flow * 0.6 + ripple * 0.2);
-
-        // River covers most of the tile, fading at edges
-        float centerDist = length(v_quadPos - 0.5) * 2.0;
-        float riverMask = smoothstep(1.0, 0.3, centerDist);
-        color = mix(color, riverColor, riverMask * 0.85);
-      }
-
-      if (hasVolcanic) {
-        // Lava: glowing flow following same downhill gradient
-        float lavaPhase = dot(v_quadPos, v_flowDir) * 2.0 - u_time * 0.4;
-        float lavaFlow = 0.5 + 0.5 * sin(lavaPhase * 6.28);
-        float lavaFlicker = 0.5 + 0.5 * sin(lavaPhase * 12.56 + v_dither * 15.0 + u_time * 3.0);
-
-        vec3 lavaDark = vec3(0.25, 0.02, 0.0);    // cooled crust
-        vec3 lavaHot = vec3(0.95, 0.35, 0.05);     // molten orange
-        vec3 lavaGlow = vec3(1.0, 0.85, 0.2);      // bright yellow veins
-
-        // Lava channels: hot veins through dark crust
-        vec3 lavaColor = mix(lavaDark, lavaHot, lavaFlow * 0.7);
-        // Bright veins in the flow channels
-        if (lavaFlicker > 0.7) {
-          lavaColor = mix(lavaColor, lavaGlow, (lavaFlicker - 0.7) * 2.0);
-        }
-
-        // Volcanic tile fully covered
-        float centerDist = length(v_quadPos - 0.5) * 2.0;
-        float lavaMask = smoothstep(1.0, 0.2, centerDist);
-        color = mix(color, lavaColor, lavaMask * 0.9);
       }
     }
 
@@ -527,7 +448,6 @@ export class MapRenderer {
       u_biomeColors: gl.getUniformLocation(this.program, 'u_biomeColors'),
       u_popTex: gl.getUniformLocation(this.program, 'u_popTex'),
       u_vegetation: gl.getUniformLocation(this.program, 'u_vegetation'),
-      u_tileFlags: gl.getUniformLocation(this.program, 'u_tileFlags'),
       u_popMode: gl.getUniformLocation(this.program, 'u_popMode'),
     };
 
@@ -564,7 +484,6 @@ export class MapRenderer {
     this.biomeTexture = gl.createTexture();
     this.popTexture = gl.createTexture();
     this.vegTexture = gl.createTexture();
-    this.flagsTexture = gl.createTexture();
   }
 
   setup(gridSize) {
@@ -617,16 +536,6 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    // Init tile flags texture as blank
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, this.flagsTexture);
-    const flagsBlank = new Uint8Array(gridSize * gridSize);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gridSize, gridSize, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, flagsBlank);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
     // Init vegetation texture as blank
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.vegTexture);
@@ -638,7 +547,7 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  updateData(elevations, biomeData, vegetationData, tileFlagsData, populations, speciesColors) {
+  updateData(elevations, biomeData, vegetationData, populations, speciesColors) {
     if (this.fallback) return;
     const gl = this.gl;
     const gs = this.gridSize;
@@ -684,13 +593,6 @@ export class MapRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    }
-
-    // Tile flags texture
-    if (tileFlagsData) {
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(gl.TEXTURE_2D, this.flagsTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, tileFlagsData);
     }
 
     // Population overlay texture
@@ -797,14 +699,11 @@ export class MapRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.popTexture);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.vegTexture);
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, this.flagsTexture);
 
     gl.uniform1i(this.locs.u_elevations, 0);
     gl.uniform1i(this.locs.u_biomes, 1);
     gl.uniform1i(this.locs.u_popTex, 2);
     gl.uniform1i(this.locs.u_vegetation, 3);
-    gl.uniform1i(this.locs.u_tileFlags, 4);
 
     const colorFlat = new Float32Array(15);
     for (let i = 0; i < 5; i++) {
