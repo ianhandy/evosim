@@ -309,11 +309,11 @@ const FRAG_SRC = `
       color += vec3(0.01, 0.02, 0.005) * v_elev;
 
     } else if (biome == 3) {
-      // ── Beach: warm sand tones ──
-      vec3 wetSand = vec3(0.55, 0.45, 0.30);
-      vec3 drySand = vec3(0.70, 0.60, 0.42);
+      // ── Beach: light warm sand ──
+      vec3 wetSand = vec3(0.60, 0.52, 0.38);
+      vec3 drySand = vec3(0.78, 0.70, 0.52);
       float sandT = clamp(smoothVar + (1.0 - v_coastal) * 0.3, 0.0, 1.0);
-      color = mix(wetSand, drySand, sandT) / 3.0; // scale down to match other biomes
+      color = mix(wetSand, drySand, sandT);
 
     } else if (biome == 4) {
       // ── Rocky: gray/slate with subtle warm undertones ──
