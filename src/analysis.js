@@ -280,11 +280,13 @@ let corrMetricY = 'specific';
 export function setCorrMetrics(x, y) { corrMetricX = x; corrMetricY = y; }
 
 const PRESETS = [
-  { label: 'Shell Thickness vs Tidal Zone', x: 'specific', y: 'elevation', note: 'Species 3 (Crab)' },
+  { label: 'Crest Brightness vs Predation', x: 'specific', y: 'population', note: 'Velothrix vs Leviathan density' },
+  { label: 'Burrowing Depth vs Elevation', x: 'specific', y: 'elevation', note: 'Reed Crawler adaptation to terrain' },
+  { label: 'Shell Thickness vs Tidal Zone', x: 'specific', y: 'elevation', note: 'Tidal Crab coastal adaptation' },
+  { label: 'Glow Intensity vs Predator Density', x: 'specific', y: 'population', note: 'Bioluminescent Worm defense' },
   { label: 'Metabolism vs Vegetation', x: 'metabolism', y: 'vegetation' },
-  { label: 'Clutch Size vs Population', x: 'clutch', y: 'population' },
   { label: 'Migration vs Elevation', x: 'migration', y: 'elevation' },
-  { label: 'Longevity vs Mutation Rate', x: 'longevity', y: 'mutation' },
+  { label: 'Clutch Size vs Population', x: 'clutch', y: 'population' },
 ];
 
 export function getPresets() { return PRESETS; }
@@ -570,34 +572,66 @@ export function renderRegionComparison(canvas, views, layout) {
     }
   }
 
-  // Genetic distance (if both regions selected)
+  // Genetic distance (Fst proxy) if both regions selected
   if (regionA && regionB) {
     const idxA = regionA.r * gs + regionA.c;
     const idxB = regionB.r * gs + regionB.c;
-    let yOff = h - 40;
+    let yOff = h - 80;
 
     ctx.fillStyle = st.goldDim;
     ctx.font = '8px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('── Genetic Distance (trait divergence) ──', w / 2, yOff);
+    ctx.fillText('── Genetic Distance (Fst proxy) ──', w / 2, yOff);
     yOff += 12;
+
+    const SPECIATION_THRESHOLD = 0.25; // Fst > 0.25 = very high divergence
 
     for (let s = 0; s < SPECIES_COUNT; s++) {
       const popA = views.populations[idxA * SPECIES_COUNT + s];
       const popB = views.populations[idxB * SPECIES_COUNT + s];
       if (popA <= 0 || popB <= 0) continue;
 
-      let sumSqDiff = 0;
+      // Fst proxy: mean |trait_diff| / pooled_stddev per trait, then average
+      let fstSum = 0;
+      let fstCount = 0;
       for (let t = 0; t < 6; t++) {
-        const a = views.traitMeans[(idxA * SPECIES_COUNT + s) * T + t];
-        const b = views.traitMeans[(idxB * SPECIES_COUNT + s) * T + t];
-        sumSqDiff += (a - b) * (a - b);
+        const meanA = views.traitMeans[(idxA * SPECIES_COUNT + s) * T + t];
+        const meanB = views.traitMeans[(idxB * SPECIES_COUNT + s) * T + t];
+        const varA = views.traitVar[(idxA * SPECIES_COUNT + s) * T + t];
+        const varB = views.traitVar[(idxB * SPECIES_COUNT + s) * T + t];
+        // Pooled variance
+        const pooledVar = (varA * popA + varB * popB) / (popA + popB);
+        const pooledStd = Math.sqrt(Math.max(0.0001, pooledVar));
+        const diff = Math.abs(meanA - meanB);
+        fstSum += diff / pooledStd;
+        fstCount++;
       }
-      const dist = Math.sqrt(sumSqDiff / 6);
-      ctx.fillStyle = SPECIES_COLORS[s];
-      ctx.fillText(`${SPECIES_NAMES[s]}: ${dist.toFixed(3)}`, w / 2, yOff);
-      yOff += 11;
+      const fst = fstCount > 0 ? fstSum / fstCount : 0;
+      const exceeds = fst > SPECIATION_THRESHOLD;
+
+      // Draw Fst value with speciation highlight
+      if (exceeds) {
+        // Glow background for speciation alert
+        ctx.fillStyle = hexToRgba(st.gold, 0.12);
+        ctx.fillRect(w / 2 - 100, yOff - 9, 200, 13);
+        ctx.strokeStyle = st.gold;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(w / 2 - 100, yOff - 9, 200, 13);
+      }
+
+      ctx.fillStyle = exceeds ? st.goldLight : SPECIES_COLORS[s];
+      ctx.font = exceeds ? 'bold 8px monospace' : '8px monospace';
+      ctx.fillText(
+        `${SPECIES_NAMES[s]}: Fst=${fst.toFixed(3)}${exceeds ? ' ★ DIVERGING' : ''}`,
+        w / 2, yOff
+      );
+      yOff += 13;
     }
+
+    // Legend
+    ctx.font = '7px monospace';
+    ctx.fillStyle = st.dim;
+    ctx.fillText(`Fst > ${SPECIATION_THRESHOLD} suggests speciation potential`, w / 2, yOff + 4);
   }
 }
 
@@ -941,8 +975,8 @@ export function renderSpeciesDetail(canvas, detail, drawPortraitFn) {
   const mapSize = Math.min(120, w * 0.25);
   const mapX = w - mapSize - 20;
   const mapY = traitStartY;
-  const gs = detail.gridSize;
-  const cellSize = mapSize / gs;
+  const dgs = detail.gridSize;
+  const cellSize = mapSize / dgs;
 
   ctx.fillStyle = st.card;
   ctx.fillRect(mapX - 2, mapY - 14, mapSize + 4, mapSize + 18);
@@ -953,9 +987,9 @@ export function renderSpeciesDetail(canvas, detail, drawPortraitFn) {
   ctx.textAlign = 'left';
   ctx.fillText('Distribution', mapX, mapY - 5);
 
-  for (let r = 0; r < gs; r++) {
-    for (let c = 0; c < gs; c++) {
-      const val = detail.spatialGrid[r * gs + c];
+  for (let r = 0; r < dgs; r++) {
+    for (let c = 0; c < dgs; c++) {
+      const val = detail.spatialGrid[r * dgs + c];
       if (val <= 0) continue;
       ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.1 + val * 0.8})`;
       ctx.fillRect(mapX + c * cellSize, mapY + r * cellSize, Math.max(1, cellSize), Math.max(1, cellSize));

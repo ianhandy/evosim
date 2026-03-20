@@ -58,6 +58,10 @@ const ghostData = {}; // species index → [{gen, pop}]
 let knownExtinctions = new Set();
 const extinctionRecords = []; // {species, name, color, bornGen, diedGen, cause, peakPop}
 
+// Timeline event markers — rendered on the population chart
+// Each: { gen, type: 'extinction'|'speciation'|'environmental', label, color }
+const timelineEvents = [];
+
 // ── Challenges & Achievements ──
 const CHALLENGES = [
   { id: 'conservationist', name: 'The Conservationist', check: (gen, pops, s) => gen >= 3000 && pops.every(p => p > 0) && !s.anyExtinctBefore3k },
@@ -449,6 +453,18 @@ mapCanvas.addEventListener('click', e => {
 // Q/E to rotate 90°, P to toggle population overlay
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'Escape') {
+    // Dismiss modals and overlays
+    if (!speciesDetailOverlay.classList.contains('hidden')) {
+      speciesDetailOverlay.classList.add('hidden');
+    } else if (!tooltipOverlay.classList.contains('hidden')) {
+      tooltipOverlay.classList.add('hidden');
+    } else if (analysis.getRegionSelectMode()) {
+      analysis.clearRegions();
+      if (activeTab === 'regions') renderRegionsTab();
+    }
+    return;
+  }
   if (e.key === 'q' || e.key === 'Q') {
     camRotation = (camRotation + 3) % 4; // rotate left 90°
   } else if (e.key === 'e' || e.key === 'E') {
@@ -1106,6 +1122,94 @@ function renderPopChart() {
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+
+  // ── Timeline event markers ──
+  if (timelineEvents.length > 0 && popHistory.length > 1) {
+    const firstGen = popHistory[0].gen;
+    const lastGen = popHistory[popHistory.length - 1].gen;
+    const genRange = lastGen - firstGen || 1;
+
+    // Store marker positions for hover detection
+    popChartMarkers.length = 0;
+
+    for (const evt of timelineEvents) {
+      const x = pad.l + ((evt.gen - firstGen) / genRange) * cw;
+      if (x < pad.l || x > pad.l + cw) continue;
+
+      const markerY = pad.t + ch + 6; // just below the chart area
+      const radius = 3;
+
+      // Glow
+      ctx.beginPath();
+      ctx.arc(x, markerY, radius + 2, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(evt.color, 0.2);
+      ctx.fill();
+
+      // Dot
+      ctx.beginPath();
+      ctx.arc(x, markerY, radius, 0, Math.PI * 2);
+      ctx.fillStyle = evt.color;
+      ctx.fill();
+
+      // Vertical line to chart
+      ctx.strokeStyle = hexToRgba(evt.color, 0.15);
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.t);
+      ctx.lineTo(x, pad.t + ch);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Store for hover
+      popChartMarkers.push({ x, y: markerY, radius: radius + 3, label: evt.label, gen: evt.gen, type: evt.type });
+    }
+  }
+}
+
+// Pop chart marker hover state
+const popChartMarkers = []; // { x, y, radius, label, gen, type }
+let popChartTooltip = null; // { x, y, label }
+
+popChart.addEventListener('mousemove', e => {
+  if (!popChartMarkers.length) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = popChart.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  let found = null;
+  for (const m of popChartMarkers) {
+    const dist = Math.sqrt((mx - m.x) ** 2 + (my - m.y) ** 2);
+    if (dist < m.radius + 4) { found = m; break; }
+  }
+
+  if (found) {
+    popChartTooltip = found;
+    popChart.style.cursor = 'pointer';
+    // Draw tooltip overlay
+    const ctx = popChart.getContext('2d');
+    const w = popChart.width / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const text = `Gen ${Math.floor(found.gen)}: ${found.label}`;
+    ctx.font = '8px monospace';
+    const tw = ctx.measureText(text).width + 8;
+    const tx = Math.min(found.x - tw / 2, w - tw - 4);
+    const ty = found.y - 16;
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(Math.max(2, tx), ty, tw, 12);
+    ctx.fillStyle = '#FFE9A3';
+    ctx.textAlign = 'left';
+    ctx.fillText(text, Math.max(2, tx) + 4, ty + 9);
+  } else {
+    popChartTooltip = null;
+    popChart.style.cursor = '';
+  }
+});
+
+popChart.addEventListener('mouseleave', () => {
+  popChartTooltip = null;
+  popChart.style.cursor = '';
 }
 
 // ── Species cards ──
@@ -1453,6 +1557,10 @@ function updateEpoch(epochId) {
   epochBanner.classList.remove('hidden');
   epochBanner.classList.add('transitioning');
   setTimeout(() => epochBanner.classList.remove('transitioning'), 1500);
+  // Record epoch change as environmental timeline event
+  if (id > 0) {
+    timelineEvents.push({ gen: Math.floor(sim.getGeneration()), type: 'environmental', label: name, color: '#4a9eff' });
+  }
 }
 
 // ── Journal feed ──
@@ -1691,21 +1799,26 @@ function checkSimEvents() {
     if (evt.type === 'extinction' && evt.data && !shownEulogies.has(evt.data.species)) {
       shownEulogies.add(evt.data.species);
       const d = evt.data;
+      const evtGen = d.gen || Math.floor(sim.getGeneration());
       extinctionRecords.push({
         species: d.species,
         name: SPECIES_FULL[d.species],
         color: SPECIES_COLORS[d.species],
         bornGen: 0,
-        diedGen: d.gen || Math.floor(sim.getGeneration()),
+        diedGen: evtGen,
         cause: d.cause || 'unknown',
         peakPop: d.peak_pop || 0,
       });
+      timelineEvents.push({ gen: evtGen, type: 'extinction', label: `${SPECIES_NAMES[d.species]} extinct`, color: '#C0392B' });
       renderGraveyard();
       showEulogy(evt.data);
     }
 
     if (evt.type === 'speciation') {
       if (challengeState.speciationGen === null) challengeState.speciationGen = currentGen;
+      const specGen = evt.data?.gen || Math.floor(sim.getGeneration());
+      const specName = evt.data?.species !== undefined ? SPECIES_NAMES[evt.data.species] : 'Species';
+      timelineEvents.push({ gen: specGen, type: 'speciation', label: `${specName} speciation`, color: '#DDC165' });
       if (!DISCLOSED.has('first-speciation')) {
         disclose('first-speciation',
           'Speciation Detected',
@@ -1716,6 +1829,13 @@ function checkSimEvents() {
 <p>In this simulation, speciation is detected when the species-specific trait diverges by more than 0.3 between northern and southern populations for 100+ consecutive generations.</p>`
         );
       }
+    }
+
+    // Environmental events (drought, flood, volcanic, etc.)
+    if (evt.type === 'environmental' || evt.type === 'epoch') {
+      const envGen = evt.data?.gen || Math.floor(sim.getGeneration());
+      const envLabel = evt.data?.name || evt.type;
+      timelineEvents.push({ gen: envGen, type: 'environmental', label: envLabel, color: '#4a9eff' });
     }
   }
 }
@@ -1832,6 +1952,8 @@ $('end-new').addEventListener('click', () => {
   extinctionRecords.length = 0;
   renderGraveyard();
   shownEulogies.clear();
+  timelineEvents.length = 0;
+  popChartMarkers.length = 0;
   lastRenderedGen = -1;
   portraitCanvases = [];
   lastTraitValues = [-1, -1, -1, -1, -1];
