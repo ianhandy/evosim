@@ -506,6 +506,34 @@ html, body {
 .journal-entry.type-milestone { border-left-color: var(--blue); }
 .journal-entry.type-season { border-left-color: var(--dim); }
 
+/* ── Graveyard ── */
+#graveyard-entries {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.graveyard-entry {
+  padding: 6px 8px;
+  border-left: 3px solid;
+  background: var(--card);
+  border-radius: 0 4px 4px 0;
+}
+.graveyard-name {
+  font-size: 10px; font-weight: 600;
+  color: var(--gold-light);
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.graveyard-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  opacity: 0.5;
+}
+.graveyard-detail {
+  font-size: 9px; color: var(--dim);
+  line-height: 1.5;
+}
+
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
