@@ -462,37 +462,73 @@ def _generate_terrain(seed_str):
 
 def _assign_biomes():
     """
-    Classify biomes by water proximity and elevation.
+    Classify biomes by elevation gain from the coastline.
 
     Rules:
-    - Underwater deep    → deep water
-    - Underwater shallow → shallow marsh
-    - Land touching water → tidal flats (beach) — mandatory
-    - All other land     → reed beds (forest)
-    - Very high land     → rocky shore (mountain/volcanic)
+    - Underwater → deep water / shallow marsh
+    - Land touching water → beach (mandatory)
+    - Beach extends inland until elevation has risen enough above
+      the local coastline baseline. Flat coasts = wide beaches,
+      steep coasts = narrow beaches.
+    - Once elevation gain exceeds threshold → forest
+    - Very high elevation → rocky shore
     """
+    from collections import deque
+
+    gs = GRID_SIZE
     SEA_LEVEL = 0.20
+    FOREST_RISE = 0.06  # elevation gain above coast baseline to trigger forest
+
     is_land = elevations >= SEA_LEVEL
 
-    # Water tiles: deep vs shallow by depth
+    # Water: deep vs shallow
     base = np.where(elevations < 0.08, BIOME_DEEP_WATER,
                     BIOME_SHALLOW_MARSH).astype(np.uint8)
 
-    # All land defaults to forest (reed beds)
+    # Default all land to forest
     base[is_land] = BIOME_REED_BEDS
-
-    # High elevation → rocky shore
     base[elevations >= 0.55] = BIOME_ROCKY_SHORE
 
-    # Beach: any land tile adjacent to water (including diagonals)
+    # Find coastal tiles (land adjacent to water, 8-neighbor)
     is_water = (~is_land).astype(np.float32)
     padded = np.pad(is_water, 1, mode='constant', constant_values=0)
     water_neighbors = (padded[:-2, 1:-1] + padded[2:, 1:-1] +
                        padded[1:-1, :-2] + padded[1:-1, 2:] +
                        padded[:-2, :-2] + padded[:-2, 2:] +
                        padded[2:, :-2] + padded[2:, 2:])
-    coastal = is_land & (water_neighbors > 0)
-    base[coastal] = BIOME_TIDAL_FLATS
+
+    # BFS from coastline: beach spreads inland until elevation rise exceeds threshold
+    visited = np.zeros((gs, gs), dtype=bool)
+    coast_baseline = np.zeros((gs, gs), dtype=np.float32)  # tracks the beach baseline elevation
+    queue = deque()
+
+    # Seed: all water-adjacent land tiles are beach
+    coastal_mask = is_land & (water_neighbors > 0)
+    for r, c in np.argwhere(coastal_mask):
+        r, c = int(r), int(c)
+        base[r, c] = BIOME_TIDAL_FLATS
+        visited[r, c] = True
+        coast_baseline[r, c] = float(elevations[r, c])
+        queue.append((r, c))
+
+    # BFS: spread beach inland until elevation gain exceeds threshold
+    dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    while queue:
+        r, c = queue.popleft()
+        baseline = coast_baseline[r, c]
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < gs and 0 <= nc < gs and not visited[nr, nc] and is_land[nr, nc]:
+                neighbor_elev = float(elevations[nr, nc])
+                rise = neighbor_elev - baseline
+                if rise < FOREST_RISE:
+                    # Still beach — hasn't risen enough
+                    base[nr, nc] = BIOME_TIDAL_FLATS
+                    visited[nr, nc] = True
+                    # Carry forward the baseline (stays tied to the coast)
+                    coast_baseline[nr, nc] = baseline
+                    queue.append((nr, nc))
+                # If rise >= threshold, leave as forest (don't visit — BFS stops here)
 
     biomes[:] = base
 
