@@ -258,38 +258,82 @@ const FRAG_SRC = `
   void main() {
     int biome = int(v_biome + 0.5);
 
-    // Use elevation for water detection (more reliable than biome texture)
     bool isWaterFrag = v_elev < 0.20;
 
-    // ── Discard water tile seafloor (face 0) — ocean surface (face 3) covers it ──
-    if (isWaterFrag && v_faceType < 0.5) {
-      discard;
-    }
+    // ═══════════════════════════════════════════════════════════
+    // WATER RENDERING
+    //
+    // Strategy: everything opaque — no alpha blending for water.
+    // "Transparency" is faked by mixing seafloor color with water
+    // color in the shader. Shallow water shows seafloor through
+    // tinted water. Deep water is mostly solid ocean blue.
+    //
+    // Face 0 (seafloor): renders at actual depth, visible through
+    //   shallow water. Tinted blue-green to look "underwater."
+    // Face 1/2 (sides): below waterline portion tinted ocean blue,
+    //   above waterline portion shows natural terrain.
+    // Face 3 (water surface): flat at sea level, fakes transparency
+    //   by reconstructing seafloor color and mixing with ocean tint.
+    // ═══════════════════════════════════════════════════════════
 
-    // ── Water tile side faces: solid dark ocean walls ──
-    if (isWaterFrag && v_faceType > 0.5 && v_faceType < 2.5) {
-      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      vec3 waterSide = vec3(0.03, 0.08, 0.16) + vec3(0.04, 0.06, 0.08) * (1.0 - depth);
-      waterSide *= (1.0 - v_pillarT * 0.5);
-      gl_FragColor = vec4(waterSide, 1.0);
-      return;
-    }
-
-    // ── Water surface (face type 3) — opaque ocean color ──
+    // ── Face 3: Water surface with fake transparency ──
     if (v_faceType > 2.5) {
       if (!isWaterFrag) discard;
 
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
 
-      // Ocean color: shallow turquoise → deep dark blue
-      vec3 shallow = vec3(0.15, 0.35, 0.40);
-      vec3 deep = vec3(0.03, 0.08, 0.18);
-      vec3 waterColor = mix(shallow, deep, depth);
+      // Reconstruct seafloor appearance
+      // (what face 0 looks like at this tile — sandy/rocky ocean floor)
+      vec3 seafloor = vec3(0.15, 0.14, 0.12); // neutral sandy bottom
+      seafloor += vec3(v_elev * 0.3, v_elev * 0.25, v_elev * 0.15);
+      seafloor += (v_dither - 0.5) * 0.03; // per-tile variation
 
-      // Subtle per-tile variation
-      waterColor += (v_dither - 0.5) * 0.02;
+      // Ocean tint that increases with depth
+      vec3 shallowTint = vec3(0.10, 0.30, 0.35);  // turquoise
+      vec3 deepTint = vec3(0.02, 0.06, 0.15);      // dark blue
 
-      gl_FragColor = vec4(waterColor, 1.0);
+      // Blend: shallow shows mostly seafloor, deep shows mostly ocean
+      // depth 0.0 (shore) = 20% ocean + 80% seafloor
+      // depth 0.5 (mid)   = 60% ocean + 40% seafloor
+      // depth 1.0 (deep)  = 90% ocean + 10% seafloor
+      float oceanMix = 0.2 + depth * 0.7;
+      vec3 oceanColor = mix(shallowTint, deepTint, depth);
+      vec3 finalColor = mix(seafloor, oceanColor, oceanMix);
+
+      gl_FragColor = vec4(finalColor, 1.0);
+      return;
+    }
+
+    // ── Face 0: Seafloor terrain (visible through shallow water) ──
+    // Rendered at actual depth. Tinted to look underwater.
+    if (isWaterFrag && v_faceType < 0.5) {
+      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
+
+      // Sandy seafloor base
+      vec3 seafloor = vec3(0.16, 0.14, 0.11);
+      seafloor += vec3(v_elev * 0.25, v_elev * 0.20, v_elev * 0.12);
+      seafloor += (v_dither - 0.5) * 0.03;
+
+      // Blue-green underwater tint, stronger at depth
+      vec3 underwaterTint = vec3(0.04, 0.12, 0.20);
+      seafloor = mix(seafloor, underwaterTint, depth * 0.6);
+
+      // Dim with depth
+      seafloor *= (0.5 + 0.5 * (1.0 - depth));
+
+      gl_FragColor = vec4(seafloor, 1.0);
+      return;
+    }
+
+    // ── Face 1/2: Side faces ──
+    // For water tiles: ocean-tinted walls
+    // For land tiles near water: blend below-waterline portion to ocean
+    if (isWaterFrag && v_faceType > 0.5 && v_faceType < 2.5) {
+      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
+      vec3 waterSide = vec3(0.04, 0.10, 0.20);
+      waterSide += vec3(0.03, 0.05, 0.06) * (1.0 - depth);
+      waterSide *= (1.0 - v_pillarT * 0.4);
+      gl_FragColor = vec4(waterSide, 1.0);
       return;
     }
 
@@ -451,11 +495,14 @@ const FRAG_SRC = `
     if (v_faceType > 0.5 && v_faceType < 2.5) {
       shade *= (1.0 - v_pillarT * 0.5);
 
-      // Coastal land sides: blend toward dark ocean color so they
-      // don't show as gray patches against the water
-      if (v_coastal > 0.1 && !isWaterFrag) {
-        vec3 coastSide = vec3(0.04, 0.10, 0.18);
-        color = mix(color, coastSide, v_coastal * 0.7);
+      // Coastal land sides: use earth/cliff tones instead of washed-out sand
+      if (v_coastal > 0.0 && !isWaterFrag) {
+        vec3 cliffColor = vec3(0.12, 0.10, 0.07); // dark earthy brown
+        vec3 oceanBlend = vec3(0.05, 0.10, 0.16);  // dark ocean
+        // Below sea level portion blends to ocean, above stays cliff
+        float belowWater = clamp((0.20 - v_elev) / 0.10, 0.0, 1.0);
+        vec3 coastSide = mix(cliffColor, oceanBlend, belowWater * v_pillarT);
+        color = mix(color, coastSide, 0.5 + v_coastal * 0.5);
       }
     }
 
