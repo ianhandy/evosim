@@ -133,8 +133,8 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Ocean floor baseline: shallow, slightly varied ──
-    grid = rng.uniform(-0.12, -0.04, (gs, gs)).astype(np.float32)
+    # ── Ocean floor baseline: very shallow, most will become land ──
+    grid = rng.uniform(-0.06, -0.01, (gs, gs)).astype(np.float32)
     floor_noise = rng.rand(gs, gs).astype(np.float32)
     floor_noise = gaussian_filter(floor_noise, sigma=gs * 0.12, mode='wrap')
     fn_lo, fn_hi = floor_noise.min(), floor_noise.max()
@@ -350,8 +350,8 @@ def _assign_biomes():
             e = elevations[r, c]
             if   e < 0.08: biomes[r, c] = BIOME_DEEP_WATER      # deep ocean
             elif e < 0.20: biomes[r, c] = BIOME_SHALLOW_MARSH    # shallow water
-            elif e < 0.28: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
-            elif e < 0.55: biomes[r, c] = BIOME_REED_BEDS        # lowland forest
+            elif e < 0.25: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
+            elif e < 0.55: biomes[r, c] = BIOME_REED_BEDS        # forest (starts lower)
             else:          biomes[r, c] = BIOME_ROCKY_SHORE       # highland / volcanic peak
 
 
