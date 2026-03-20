@@ -644,7 +644,17 @@ def _assign_biomes():
 
     # Default all land to forest
     base[is_land] = BIOME_REED_BEDS
-    base[elevations >= 0.55] = BIOME_ROCKY_SHORE
+
+    # Rocky ONLY on volcanic-flagged tiles and their immediate neighbors
+    # (peaks, ridge spines, lava deposits — NOT all high-elevation land)
+    volcanic = (tile_flags & 2) > 0
+    vol_padded = np.pad(volcanic.astype(np.float32), 1, mode='constant')
+    near_volcanic = (vol_padded[:-2, 1:-1] + vol_padded[2:, 1:-1] +
+                     vol_padded[1:-1, :-2] + vol_padded[1:-1, 2:] +
+                     vol_padded[:-2, :-2] + vol_padded[:-2, 2:] +
+                     vol_padded[2:, :-2] + vol_padded[2:, 2:]) > 0
+    rocky_mask = is_land & (volcanic | (near_volcanic & (elevations >= 0.50)))
+    base[rocky_mask] = BIOME_ROCKY_SHORE
 
     # Find coastal tiles (land adjacent to water, 8-neighbor)
     is_water = (~is_land).astype(np.float32)
@@ -694,9 +704,9 @@ def _assign_biomes():
                 visited[nr, nc] = True
                 n_elev = float(elevations[nr, nc])
 
-                # Skip tiles already marked as rocky shore (high peaks)
+                # Skip tiles already marked as rocky shore (peaks/ridges)
                 if base[nr, nc] == BIOME_ROCKY_SHORE:
-                    forest_streak[nr, nc] = 2  # treat as forest for neighbors
+                    forest_streak[nr, nc] = 2
                     queue.append((nr, nc))
                     continue
 
@@ -705,25 +715,37 @@ def _assign_biomes():
                 coast_baseline[nr, nc] = baseline
                 rise = n_elev - baseline
 
+                # How much has elevation gained per tile from coast?
+                rise_per_tile = rise / max(1, depth)
+
                 # Determine if this tile is forest or beach
                 is_forest = False
 
                 if parent_streak >= 2:
-                    # Two consecutive forest tiles already → all forest from here
+                    # Two consecutive forest tiles → all forest from here
                     is_forest = True
                 elif rise >= CLIFF_RISE:
-                    # Cliff: steep rise from coast → forest
+                    # Cliff → forest
                     is_forest = True
                 elif parent_streak == 1:
-                    # One forest parent → 95% chance of forest
+                    # One forest parent → 95% forest
                     is_forest = rng_biome.random() < 0.95
                 else:
-                    # Exponential probability based on depth from coast
-                    # depth 1: ~8%, depth 2: ~25%, depth 3: ~50%, depth 4: ~75%
+                    # Exponential probability — but REDUCED on flat terrain
+                    # Flat land (low rise_per_tile) stays sandy longer
+                    # Base: exponential with depth
                     prob = 1.0 - math.exp(-0.35 * depth)
-                    # Elevation boost: higher tiles more likely to be forest
+                    # Elevation boost: steeper terrain → forest sooner
                     elev_boost = min(0.3, rise * 3.0)
                     prob = min(1.0, prob + elev_boost)
+                    # Flat terrain penalty: if barely gaining elevation,
+                    # sand spreads further inland
+                    if rise_per_tile < 0.008:
+                        # Very flat — strong penalty, sand persists
+                        prob *= 0.3
+                    elif rise_per_tile < 0.015:
+                        # Mildly flat — moderate penalty
+                        prob *= 0.6
                     is_forest = rng_biome.random() < prob
 
                 if is_forest:
