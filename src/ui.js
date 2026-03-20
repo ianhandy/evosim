@@ -550,10 +550,11 @@ function startRenderLoop() {
   renderFrameId = requestAnimationFrame(frame);
 }
 
-// ── Map renderer (Canvas 2D) ──
+// ── Map renderer (Canvas 2D fallback — only used when WebGL is unavailable) ──
 function renderMap(views) {
   const dpr = window.devicePixelRatio || 1;
   const ctx = mapCanvas.getContext('2d');
+  if (!ctx) return; // canvas already has WebGL context
   const w = mapCanvas.width / dpr;
   const h = mapCanvas.height / dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1058,7 +1059,9 @@ function renderSpeciesCards(totalPops) {
     if (traitDelta > 0.01 || lastTraitValues[s] < 0) {
       lastTraitValues[s] = meanTraits[s];
       const canvas = portraitCanvases[s];
+      if (!canvas) continue;
       const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
       const dpr = window.devicePixelRatio || 1;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawPortrait(ctx, s, meanTraits[s], 40, SPECIES_COLORS[s]);

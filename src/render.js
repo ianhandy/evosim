@@ -443,7 +443,7 @@ export class MapRenderer {
         path.push([pr, pc]);
       }
 
-      if (!active && path.length < 2) continue;
+      if (path.length < 2) continue;
 
       // Emit line segments: each pair of consecutive points = 2 vertices
       for (let i = 0; i < path.length - 1; i++) {
@@ -494,6 +494,14 @@ export class MapRenderer {
     gl.uniform1f(this.locs.u_rotation, camera.rotation || 0);
     gl.uniform1f(this.locs.u_popMode, this.popMode ? 1.0 : 0.0);
 
+    // Bind textures (in case render() is called before updateData())
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.biomeTexture);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.popTexture);
+
     gl.uniform1i(this.locs.u_elevations, 0);
     gl.uniform1i(this.locs.u_biomes, 1);
     gl.uniform1i(this.locs.u_popTex, 2);
@@ -520,8 +528,13 @@ export class MapRenderer {
 
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
 
+    // Disable terrain attribs before switching programs
+    gl.disableVertexAttribArray(this.locs.a_quad);
+    gl.disableVertexAttribArray(this.locs.a_tileIdx);
+    gl.disableVertexAttribArray(this.locs.a_faceType);
+
     // ── Draw rivers ──
-    if (this.riverProgram && this.riverVertCount > 0) {
+    if (this.riverProgram && this.riverLocs && this.riverVertCount > 0) {
       gl.useProgram(this.riverProgram);
 
       gl.uniform1f(this.riverLocs.u_gridSize, this.gridSize);
