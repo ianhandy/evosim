@@ -116,9 +116,10 @@ def _generate_terrain(seed_str):
     """
     Generate terrain via hotspot volcanism + plate drift + erosion.
 
-    Generates on an oversized canvas (1.5× GRID_SIZE) so geology can spread
-    freely. After the sim, finds all land, crops to fit with ocean padding,
-    and resamples down to GRID_SIZE. No land is cut off.
+    Generates on an oversized canvas (2× GRID_SIZE) so geology can spread
+    freely. After the sim, applies a smooth radial falloff centered on the
+    land mass that tapers elevation into ocean — no hard crop boundaries.
+    The result is resampled down to GRID_SIZE.
 
     1. Start with flat ocean floor (negative elevation + noise)
     2. Place hotspot mantle plumes clustered along fault lines
@@ -138,7 +139,7 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
     # Work on an oversized canvas so land can grow freely in any direction
-    igs = int(gs * 1.5)  # internal generation size
+    igs = gs * 2  # internal generation size
 
     # ── Ocean floor baseline: very shallow, most will become land ──
     grid = rng.uniform(-0.06, -0.01, (igs, igs)).astype(np.float32)
@@ -268,60 +269,86 @@ def _generate_terrain(seed_str):
     if 'snapshot' in dir():
         grid = snapshot
 
-    # ── Crop to land bounding box + ocean padding, resample to GRID_SIZE ──
-    # Find all land tiles and compute their bounding box
+    # ── Radial falloff: smoothly taper land into ocean around the land mass ──
+    # Find the land center of mass and max extent, then apply a smooth
+    # multiplier that fades elevation to ocean beyond the land perimeter.
+    # This creates natural coastlines with no hard boundaries.
     land_mask = grid > 0
     if np.any(land_mask):
         land_coords = np.argwhere(land_mask)
-        r_min, c_min = land_coords.min(axis=0)
-        r_max, c_max = land_coords.max(axis=0)
+        # Elevation-weighted center of mass
+        weights_flat = grid[land_mask]
+        total_weight = weights_flat.sum()
+        cm_r = (land_coords[:, 0] * weights_flat).sum() / total_weight
+        cm_c = (land_coords[:, 1] * weights_flat).sum() / total_weight
 
-        # Add ocean padding — enough for coastlines and shallow water
-        # Padding is proportional to the land extent so islands get more sea
-        land_h = r_max - r_min + 1
-        land_w = c_max - c_min + 1
-        pad = max(4, int(max(land_h, land_w) * 0.25))
+        # Max distance from center to any land tile
+        dists = np.sqrt((land_coords[:, 0] - cm_r) ** 2 +
+                        (land_coords[:, 1] - cm_c) ** 2)
+        max_land_dist = dists.max()
 
-        # Make the crop square (the output grid is square)
-        crop_size = max(land_h, land_w) + pad * 2
-        # Center the land in the square crop
+        # Falloff starts just beyond the land edge, reaches full ocean
+        # at inner_r + fade_width. This means all land is preserved (multiplier=1)
+        # and terrain smoothly transitions to ocean beyond.
+        inner_r = max_land_dist * 1.05  # small buffer past furthest land
+        fade_width = max_land_dist * 0.3  # smooth transition zone
+
+        rows_v = np.arange(igs)[:, None]
+        cols_v = np.arange(igs)[None, :]
+        dist_from_cm = np.sqrt((rows_v - cm_r) ** 2 + (cols_v - cm_c) ** 2)
+
+        # Smoothstep: 1.0 inside inner_r, fades to 0.0 at inner_r + fade_width
+        t = np.clip((dist_from_cm - inner_r) / max(1, fade_width), 0, 1)
+        falloff = 1 - t * t * (3 - 2 * t)  # smoothstep
+
+        # Apply: multiply positive elevation by falloff, push falloff=0 regions
+        # to negative (ocean). Existing ocean stays ocean.
+        grid = np.where(grid > 0, grid * falloff, grid)
+        # Also push the transition zone below sea level where falloff is low
+        grid -= (1 - falloff) * 0.08
+
+    # ── Crop to interesting region + resample to GRID_SIZE ──
+    # Find bounding box of everything above deep ocean
+    above_deep = grid > -0.03
+    if np.any(above_deep):
+        coords = np.argwhere(above_deep)
+        r_min, c_min = coords.min(axis=0)
+        r_max, c_max = coords.max(axis=0)
+        # Pad and make square
+        extent = max(r_max - r_min + 1, c_max - c_min + 1)
+        pad = max(2, int(extent * 0.08))
+        crop_size = extent + pad * 2
         r_center = (r_min + r_max) // 2
         c_center = (c_min + c_max) // 2
-        crop_r0 = r_center - crop_size // 2
-        crop_c0 = c_center - crop_size // 2
-
-        # Clamp to canvas bounds, filling with ocean where needed
-        src_r0 = max(0, crop_r0)
-        src_c0 = max(0, crop_c0)
-        src_r1 = min(igs, crop_r0 + crop_size)
-        src_c1 = min(igs, crop_c0 + crop_size)
-
-        # Create the crop with ocean fill for out-of-bounds regions
-        cropped = np.full((crop_size, crop_size), -0.04, dtype=np.float32)
-        dst_r0 = src_r0 - crop_r0
-        dst_c0 = src_c0 - crop_c0
-        dst_r1 = dst_r0 + (src_r1 - src_r0)
-        dst_c1 = dst_c0 + (src_c1 - src_c0)
-        cropped[dst_r0:dst_r1, dst_c0:dst_c1] = grid[src_r0:src_r1, src_c0:src_c1]
     else:
-        # No land at all — use center crop
-        offset = (igs - gs) // 2
-        cropped = grid[offset:offset + gs, offset:offset + gs].copy()
-        crop_size = gs
+        crop_size = igs
+        r_center = igs // 2
+        c_center = igs // 2
 
-    # Resample cropped region to GRID_SIZE × GRID_SIZE
-    if crop_size != gs:
-        zoom_factor = gs / crop_size
-        grid = zoom(cropped, zoom_factor, order=1, mode='nearest').astype(np.float32)
-        # zoom can produce slightly off-size results — force exact
+    crop_r0 = max(0, r_center - crop_size // 2)
+    crop_c0 = max(0, c_center - crop_size // 2)
+    crop_r1 = min(igs, crop_r0 + crop_size)
+    crop_c1 = min(igs, crop_c0 + crop_size)
+    # Adjust if clamped
+    crop_r0 = max(0, crop_r1 - crop_size)
+    crop_c0 = max(0, crop_c1 - crop_size)
+    cropped = grid[crop_r0:crop_r1, crop_c0:crop_c1]
+
+    # Resample to GRID_SIZE
+    actual_h, actual_w = cropped.shape
+    if actual_h != gs or actual_w != gs:
+        zoom_r = gs / actual_h
+        zoom_c = gs / actual_w
+        grid = zoom(cropped, (zoom_r, zoom_c), order=1, mode='nearest').astype(np.float32)
+        # Force exact size
         if grid.shape[0] != gs or grid.shape[1] != gs:
-            final = np.full((gs, gs), -0.04, dtype=np.float32)
-            copy_r = min(gs, grid.shape[0])
-            copy_c = min(gs, grid.shape[1])
-            final[:copy_r, :copy_c] = grid[:copy_r, :copy_c]
+            final = np.full((gs, gs), grid.min(), dtype=np.float32)
+            cr = min(gs, grid.shape[0])
+            cc = min(gs, grid.shape[1])
+            final[:cr, :cc] = grid[:cr, :cc]
             grid = final
     else:
-        grid = cropped
+        grid = cropped.copy()
 
     # ── Detail noise pass — break up the smooth volcanic slopes ──
     detail = rng.rand(gs, gs).astype(np.float32)
