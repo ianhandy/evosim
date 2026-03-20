@@ -136,11 +136,11 @@ const VERT_SRC = `
       v_pillarT = a_quad.x;
     } else {
       // Face 3: water surface
-      float wave = sin(u_time * 1.5 + row * 0.7 + col * 1.1) * 0.003 * hScale;
+      // Water surface: flat at sea level (wave animation moved to fragment shader)
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - waterIz - wave + localY * tileH * 0.5;
+      pos.y = iy - waterIz + localY * tileH * 0.5;
     }
 
     // ── BACKUP: Sloped tiles (uncomment to enable) ──
