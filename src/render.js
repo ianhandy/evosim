@@ -49,59 +49,58 @@ const VERT_SRC = `
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
-    // Population overlay color (sampled here for the vertex, interpolated to frag)
     v_popColor = u_popMode > 0.5 ? texture2D(u_popTex, texCoord) : vec4(0.0);
 
-    // Rotate around grid center
-    float center = (gs - 1.0) * 0.5;
-    float cr = row - center;
-    float cc = col - center;
-    float cosR = cos(u_rotation);
-    float sinR = sin(u_rotation);
-    float rRow = cr * cosR - cc * sinR;
-    float rCol = cr * sinR + cc * cosR;
-
-    // Isometric projection
+    // Standard isometric projection (no rotation here)
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
-    float ix = (rCol - rRow) * tileW * 0.5;
-    float iy = (rCol + rRow) * tileH * 0.5;
+    float ix = (col - row) * tileW * 0.5;
+    float iy = (col + row) * tileH * 0.5;
     float iz = elev * hScale;
 
-    float maxExtent = gs * 0.7072;
-    float deepBase = maxExtent * tileH * 0.5 + hScale * 0.5;
+    // Deep baseline for pillars
+    float deepBase = gs * tileH * 0.5 + hScale * 0.5;
     float pillarH = max(0.0, deepBase - (iy - iz + tileH * 0.5));
-
-    float rightShade = 0.45 - 0.15 * sin(u_rotation);
-    float leftShade = 0.30 + 0.15 * sin(u_rotation);
 
     vec2 pos;
     if (a_faceType < 0.5) {
+      // Top face diamond
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
       pos.y = iy - iz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
+      // Right side face
       float topY = iy - iz;
       pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
       pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
     } else {
+      // Left side face
       float topY = iy - iz;
       pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
       pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
     }
 
-    pos.x += u_pan.x / u_resolution.x * 2.0;
-    pos.y += u_pan.y / u_resolution.y * 2.0;
+    // Apply rotation as screen-space transform around origin
+    float cosR = cos(u_rotation);
+    float sinR = sin(u_rotation);
+    vec2 rotated = vec2(
+      pos.x * cosR - pos.y * sinR,
+      pos.x * sinR + pos.y * cosR
+    );
 
-    v_shade = a_faceType < 0.5 ? 1.0 : (a_faceType < 1.5 ? rightShade : leftShade);
+    // Apply pan
+    rotated.x += u_pan.x / u_resolution.x * 2.0;
+    rotated.y += u_pan.y / u_resolution.y * 2.0;
+
+    v_shade = a_faceType < 0.5 ? 1.0 : (a_faceType < 1.5 ? 0.45 : 0.3);
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
 
-    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
+    gl_Position = vec4(rotated.x, -rotated.y, 0.0, 1.0);
   }
 `;
 
@@ -173,33 +172,32 @@ const RIVER_VERT_SRC = `
     float row = a_pos.x;
     float col = a_pos.y;
 
-    // Sample elevation at this river point
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
-    // Rotate around grid center
-    float center = (gs - 1.0) * 0.5;
-    float cr = row - center;
-    float cc = col - center;
-    float cosR = cos(u_rotation);
-    float sinR = sin(u_rotation);
-    float rRow = cr * cosR - cc * sinR;
-    float rCol = cr * sinR + cc * cosR;
-
-    // Isometric projection
+    // Standard isometric projection
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
-    float ix = (rCol - rRow) * tileW * 0.5;
-    float iy = (rCol + rRow) * tileH * 0.5;
+    float ix = (col - row) * tileW * 0.5;
+    float iy = (col + row) * tileH * 0.5;
     float iz = elev * hScale;
 
-    vec2 pos;
-    pos.x = ix + u_pan.x / u_resolution.x * 2.0;
-    pos.y = -(iy - iz + u_pan.y / u_resolution.y * 2.0);
+    vec2 pos = vec2(ix, iy - iz);
 
-    gl_Position = vec4(pos, 0.0, 1.0);
+    // Screen-space rotation
+    float cosR = cos(u_rotation);
+    float sinR = sin(u_rotation);
+    vec2 rotated = vec2(
+      pos.x * cosR - pos.y * sinR,
+      pos.x * sinR + pos.y * cosR
+    );
+
+    rotated.x += u_pan.x / u_resolution.x * 2.0;
+    rotated.y += u_pan.y / u_resolution.y * 2.0;
+
+    gl_Position = vec4(rotated.x, -rotated.y, 0.0, 1.0);
     gl_PointSize = max(2.0, a_width * u_zoom * 3.0);
     v_alpha = 0.7;
   }
