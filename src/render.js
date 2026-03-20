@@ -100,15 +100,14 @@ const VERT_SRC = `
     v_coastal = waterNeighbors / 4.0; // 0=inland, 1=surrounded by water
 
     // ── Elevation normalization ──
-    // Compress peaks, expand low-mid range for natural terrain profile.
-    // Raw elev: 0.0-0.20 = underwater, 0.20-1.0 = land.
-    // Apply sqrt curve to land portion so low terrain gets more height
-    // variation and peaks don't tower unrealistically.
+    // Smooth ramp from sea level. Low land stays close to water,
+    // mid elevations get a gradual rise, peaks are compressed.
     float renderElev = elev;
     if (elev > WATER_LEVEL) {
       float landT = (elev - WATER_LEVEL) / (1.0 - WATER_LEVEL); // 0-1 over land range
-      float normalized = sqrt(landT); // sqrt compresses highs, expands lows
-      renderElev = WATER_LEVEL + normalized * (1.0 - WATER_LEVEL) * 0.7; // 0.7 = overall height reduction
+      // Smoothstep: gentle start, steeper middle, compressed top
+      float normalized = landT * landT * (3.0 - 2.0 * landT);
+      renderElev = WATER_LEVEL + normalized * (1.0 - WATER_LEVEL) * 0.75;
     }
 
     float floorElev = max(0.0, u_minElev - 0.02);
