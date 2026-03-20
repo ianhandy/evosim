@@ -716,175 +716,66 @@ def _update_biomes_incremental():
 
 def _assign_biomes():
     """
-    Classify biomes via probabilistic BFS from coastline.
+    Simple spatial biome assignment. No BFS, no probability rolls.
 
-    Rules:
-    - Underwater → deep water / shallow marsh
-    - Coastal land → beach (mandatory first ring)
-    - Inland: forest probability increases exponentially per tile from coast.
-      Cliffs (high elevation gain) skip straight to forest.
-      Once one forest tile rolls, next tile is 95% forest.
-      Once two consecutive forest tiles roll, everything beyond is forest.
-    - Very high elevation → rocky shore
+    1. Water: deep / shallow by depth
+    2. Beach: land touching water + 1-tile buffer on low ground
+    3. Rocky: steep slopes + volcanic summits
+    4. Forest: everything else
     """
-    from collections import deque
-
     gs = GRID_SIZE
     SEA_LEVEL = 0.20
-    CLIFF_RISE = 0.10  # elevation gain that counts as a cliff → instant forest
-
     is_land = elevations >= SEA_LEVEL
 
-    # Water: deep vs shallow
+    # Water
     base = np.where(elevations < 0.08, BIOME_DEEP_WATER,
                     BIOME_SHALLOW_MARSH).astype(np.uint8)
 
-    # Default all land to forest
+    # All land starts as forest
     base[is_land] = BIOME_REED_BEDS
 
-    # ── Rocky tiles: steepness + volcanic proximity ──
-    # Trees can't grow on very steep slopes. Combine slope steepness
-    # with volcanic flag proximity to determine rocky tiles.
-    # Compute max elevation difference to any neighbor (steepness)
+    # ── Steepness ──
     padded_elev = np.pad(elevations, 1, mode='edge')
     max_slope = np.zeros((gs, gs), dtype=np.float32)
     for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-        neighbor = padded_elev[1+dr:gs+1+dr, 1+dc:gs+1+dc]
-        max_slope = np.maximum(max_slope, np.abs(elevations - neighbor))
+        nb = padded_elev[1+dr:gs+1+dr, 1+dc:gs+1+dc]
+        max_slope = np.maximum(max_slope, np.abs(elevations - nb))
 
-    # Rocky if: steep slope AND (near volcano OR very steep)
+    # ── Rocky: steep + volcanic ──
     volcanic = (tile_flags & 2) > 0
     vol_padded = np.pad(volcanic.astype(np.float32), 1, mode='constant')
     near_volcanic = (vol_padded[:-2, 1:-1] + vol_padded[2:, 1:-1] +
                      vol_padded[1:-1, :-2] + vol_padded[1:-1, 2:] +
                      vol_padded[:-2, :-2] + vol_padded[:-2, 2:] +
                      vol_padded[2:, :-2] + vol_padded[2:, 2:]) > 0
-    # Steep enough that trees can't hold: slope > 0.06
-    # Near volcano + moderate slope: slope > 0.03
-    steep_rocky = is_land & (max_slope > 0.06)
-    volcanic_rocky = is_land & near_volcanic & (max_slope > 0.03)
-    summit_rocky = is_land & volcanic
-    # Forest can regrow on old lava if slope is gentle
-    # (volcanic flag stays but biome can become forest if slope < 0.03)
-    base[steep_rocky | volcanic_rocky | summit_rocky] = BIOME_ROCKY_SHORE
+    rocky = is_land & (
+        volcanic |
+        (near_volcanic & (max_slope > 0.025)) |
+        (max_slope > 0.05)
+    )
+    base[rocky] = BIOME_ROCKY_SHORE
 
-    # Find coastal tiles (land adjacent to water, 8-neighbor)
+    # ── Beach: land touching water + 1-tile buffer ──
     is_water = (~is_land).astype(np.float32)
-    padded = np.pad(is_water, 1, mode='constant', constant_values=0)
-    water_neighbors = (padded[:-2, 1:-1] + padded[2:, 1:-1] +
-                       padded[1:-1, :-2] + padded[1:-1, 2:] +
-                       padded[:-2, :-2] + padded[:-2, 2:] +
-                       padded[2:, :-2] + padded[2:, 2:])
+    padded_w = np.pad(is_water, 1, mode='constant', constant_values=0)
+    water_adj = (padded_w[:-2, 1:-1] + padded_w[2:, 1:-1] +
+                 padded_w[1:-1, :-2] + padded_w[1:-1, 2:] +
+                 padded_w[:-2, :-2] + padded_w[:-2, 2:] +
+                 padded_w[2:, :-2] + padded_w[2:, 2:])
 
-    # BFS from coastline with probabilistic forest transition
-    visited = np.zeros((gs, gs), dtype=bool)
-    coast_baseline = np.zeros((gs, gs), dtype=np.float32)
-    forest_streak = np.zeros((gs, gs), dtype=np.int32)  # consecutive forest parents
-    tile_depth = np.zeros((gs, gs), dtype=np.int32)      # distance from coast in tiles
-    queue = deque()
+    # First ring: directly touching water (not rocky cliffs)
+    coastal = is_land & (water_adj > 0) & (~rocky)
+    base[coastal] = BIOME_TIDAL_FLATS
 
-    # Seed: all water-adjacent land tiles are beach (depth 0)
-    coastal_mask = is_land & (water_neighbors > 0)
-    for r, c in np.argwhere(coastal_mask):
-        r, c = int(r), int(c)
-        elev_here = float(elevations[r, c])
-        rise = elev_here - SEA_LEVEL
-        # Cliff exception: if first land tile is way above water, match forest
-        if rise >= CLIFF_RISE:
-            base[r, c] = BIOME_REED_BEDS
-            forest_streak[r, c] = 1
-        else:
-            base[r, c] = BIOME_TIDAL_FLATS
-        visited[r, c] = True
-        coast_baseline[r, c] = elev_here
-        tile_depth[r, c] = 0
-        queue.append((r, c))
-
-    # Use deterministic random for reproducibility (seeded by terrain seed)
-    rng_biome = random.Random(int(np.sum(elevations * 1000)))
-
-    dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
-    while queue:
-        r, c = queue.popleft()
-        parent_streak = int(forest_streak[r, c])
-        parent_depth = int(tile_depth[r, c])
-        baseline = float(coast_baseline[r, c])
-
-        for dr, dc in dirs:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < gs and 0 <= nc < gs and not visited[nr, nc] and is_land[nr, nc]:
-                visited[nr, nc] = True
-                n_elev = float(elevations[nr, nc])
-
-                # Skip tiles already marked as rocky shore (peaks/ridges)
-                if base[nr, nc] == BIOME_ROCKY_SHORE:
-                    forest_streak[nr, nc] = 2
-                    queue.append((nr, nc))
-                    continue
-
-                depth = parent_depth + 1
-                tile_depth[nr, nc] = depth
-                coast_baseline[nr, nc] = baseline
-                rise = n_elev - baseline
-
-                # How much has elevation gained per tile from coast?
-                rise_per_tile = rise / max(1, depth)
-
-                # Determine if this tile is forest or beach
-                is_forest = False
-
-                # Absolute elevation above sea level
-                above_sea = n_elev - SEA_LEVEL
-
-                if rise >= CLIFF_RISE:
-                    # Cliff → forest regardless
-                    is_forest = True
-                else:
-                    # Base probability from depth
-                    prob = 1.0 - math.exp(-0.35 * depth)
-
-                    # Elevation boost: steeper terrain → forest sooner
-                    elev_boost = min(0.3, rise * 3.0)
-                    prob = min(1.0, prob + elev_boost)
-
-                    # Flat terrain penalty
-                    if rise_per_tile < 0.008:
-                        prob *= 0.3
-                    elif rise_per_tile < 0.015:
-                        prob *= 0.6
-
-                    # Forest streak bonus (but NOT guaranteed)
-                    # Being next to forest helps but doesn't lock it in
-                    if parent_streak >= 3:
-                        prob = min(1.0, prob + 0.3)
-                    elif parent_streak >= 2:
-                        prob = min(1.0, prob + 0.2)
-                    elif parent_streak >= 1:
-                        prob = min(1.0, prob + 0.15)
-
-                    # Low elevation penalty: tiles barely above sea level
-                    # are harder to become forest (sand dominates low ground)
-                    if above_sea < 0.04:
-                        # Within ~1 tile height of ocean — roll with disadvantage
-                        # (roll twice, take the one that favors sand)
-                        roll1 = rng_biome.random()
-                        roll2 = rng_biome.random()
-                        is_forest = max(roll1, roll2) < prob  # max = harder to pass
-                    elif above_sea < 0.08:
-                        # Still low — mild penalty
-                        prob *= 0.7
-                        is_forest = rng_biome.random() < prob
-                    else:
-                        is_forest = rng_biome.random() < prob
-
-                if is_forest:
-                    base[nr, nc] = BIOME_REED_BEDS
-                    forest_streak[nr, nc] = parent_streak + 1
-                else:
-                    base[nr, nc] = BIOME_TIDAL_FLATS
-                    forest_streak[nr, nc] = 0
-
-                queue.append((nr, nc))
+    # Second ring: touching a coastal tile, only on low ground
+    coastal_f = coastal.astype(np.float32)
+    coastal_pad = np.pad(coastal_f, 1, mode='constant')
+    near_coastal = (coastal_pad[:-2, 1:-1] + coastal_pad[2:, 1:-1] +
+                    coastal_pad[1:-1, :-2] + coastal_pad[1:-1, 2:] +
+                    coastal_pad[:-2, :-2] + coastal_pad[:-2, 2:] +
+                    coastal_pad[2:, :-2] + coastal_pad[2:, 2:]) > 0
+    buffer_beach = is_land & near_coastal & (~rocky) & (~coastal) & (elevations < 0.28)
+    base[buffer_beach] = BIOME_TIDAL_FLATS
 
     biomes[:] = base
 

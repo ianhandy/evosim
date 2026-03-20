@@ -363,11 +363,23 @@ window.addEventListener('mousemove', e => {
     // Right-click or shift: tilt
     camTilt = Math.max(0.05, Math.min(0.8, camTilt + dy * 0.004));
   } else {
-    // Left-click: pan
+    // Left-click: pan (clamped so center stays on map)
     camPanX += dx;
     camPanY += dy;
+    clampPan();
   }
 });
+function clampPan() {
+  // Map half-extent in screen pixels (approximate)
+  const rect = mapCanvas.getBoundingClientRect();
+  const tileW = (rect.width / gridSize) * 0.85 * camZoom;
+  const halfMapW = gridSize * tileW * 0.5;
+  const halfMapH = gridSize * tileW * camTilt * 0.5;
+  const maxPanX = Math.max(0, halfMapW - rect.width * 0.1);
+  const maxPanY = Math.max(0, halfMapH - rect.height * 0.1);
+  camPanX = Math.max(-maxPanX, Math.min(maxPanX, camPanX));
+  camPanY = Math.max(-maxPanY, Math.min(maxPanY, camPanY));
+}
 window.addEventListener('mouseup', () => { isDragging = false; dragButton = -1; });
 mapCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -403,6 +415,7 @@ mapCanvas.addEventListener('touchmove', e => {
     dragLastY = e.touches[0].clientY;
     camPanX += dx;
     camPanY += dy;
+    clampPan();
   } else if (e.touches.length === 2) {
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
