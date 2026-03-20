@@ -44,6 +44,8 @@ const VERT_SRC = `
   varying float v_pillarT;
   varying float v_veg;
   varying float v_coastal;
+  varying vec2 v_quadPos;         // position within tile (0-1)
+  varying float v_forestDensity;  // how forested the neighborhood is (0-1)
 
   void main() {
     float gs = u_gridSize;
@@ -172,6 +174,16 @@ const VERT_SRC = `
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
+    v_quadPos = a_quad;
+
+    // Forest density: count how many of the 4 direct neighbors are forest (biome 2)
+    // BIOME_REED_BEDS = 2, encoded as 2/255 ≈ 0.0078 in texture
+    float forestSelf = abs(v_biome - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fN = abs(texture2D(u_biomes, texCoord + vec2(0.0, -texel)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fS = abs(texture2D(u_biomes, texCoord + vec2(0.0,  texel)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fW = abs(texture2D(u_biomes, texCoord + vec2(-texel, 0.0)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fE = abs(texture2D(u_biomes, texCoord + vec2( texel, 0.0)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
+    v_forestDensity = (forestSelf + fN + fS + fW + fE) / 5.0;
 
     gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
   }
@@ -189,6 +201,8 @@ const FRAG_SRC = `
   varying float v_pillarT;
   varying float v_veg;
   varying float v_coastal;
+  varying vec2 v_quadPos;
+  varying float v_forestDensity;
 
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
@@ -248,9 +262,39 @@ const FRAG_SRC = `
       color += vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
     }
 
-    // Per-tile dither
+    // ── Within-tile texture (top faces only) ──
     if (v_faceType < 0.5) {
-      color += (v_dither - 0.5) * 0.06;
+      // Multi-frequency noise from quad position + tile hash
+      float n1 = fract(sin(v_quadPos.x * 43.1 + v_quadPos.y * 17.3 + v_dither * 91.7) * 43758.5);
+      float n2 = fract(sin(v_quadPos.x * 127.3 + v_quadPos.y * 311.1 + v_dither * 53.2) * 28461.9);
+      float n3 = fract(sin((v_quadPos.x + v_quadPos.y) * 73.7 + v_dither * 197.3) * 15731.3);
+
+      // Base brightness variation
+      color += (n1 - 0.5) * 0.04;
+
+      if (biome == 2) {
+        // Forest tiles: grass spots that increase with forest density
+        // More contiguous forest = denser, greener grass
+        float grassNoise = n2 * n3; // clustered spots
+        float grassStrength = v_forestDensity * v_veg; // denser forest + more veg = more grass
+        vec3 grassColor = vec3(0.08, 0.18, 0.04); // dark grass green
+        vec3 lightGrass = vec3(0.15, 0.28, 0.08); // lighter grass patches
+        // Sparse grass spots at low density, thick coverage at high density
+        float grassThreshold = 0.8 - grassStrength * 0.6; // 0.8 at edges → 0.2 deep forest
+        if (grassNoise > grassThreshold) {
+          float t = (grassNoise - grassThreshold) / (1.0 - grassThreshold);
+          vec3 gColor = mix(grassColor, lightGrass, n1);
+          color = mix(color, gColor, t * 0.5 * grassStrength);
+        }
+      } else if (biome == 3) {
+        // Beach tiles: sandy grain texture
+        float grain = n1 * 0.7 + n2 * 0.3;
+        color += (grain - 0.5) * 0.04;
+        // Occasional darker wet sand patches near water
+        if (v_coastal > 0.3 && n3 > 0.7) {
+          color *= 0.92; // darker wet spot
+        }
+      }
     }
 
     // Face shading
