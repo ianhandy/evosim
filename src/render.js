@@ -127,14 +127,11 @@ const VERT_SRC = `
     v_pillarT = 0.0;
 
     if (a_faceType < 0.5) {
-      // Face 0: flat terrain top diamond
-      // Water tiles: render seafloor at water level (hidden under face 3)
-      // so no gray squares show through at coastlines
-      float topIz = isWater ? waterIz : surfaceIz;
+      // Face 0: terrain/seafloor at actual elevation
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - topIz + localY * tileH * 0.5;
+      pos.y = iy - surfaceIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
       // Face 1: right side pillar
       if (isWater && !waterNeedsSides) {
@@ -260,9 +257,18 @@ const FRAG_SRC = `
   void main() {
     int biome = int(v_biome + 0.5);
 
-    // ── Discard water tile side faces — they cause dark edges at coastlines ──
+    // ── Water tile side faces: render as translucent water walls ──
     if (biome <= 1 && v_faceType > 0.5 && v_faceType < 2.5) {
-      discard;
+      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
+      vec3 waterSide = vec3(
+        (10.0 + (1.0 - depth) * 40.0) / 255.0,
+        (50.0 + (1.0 - depth) * 60.0) / 255.0,
+        (100.0 + (1.0 - depth) * 50.0) / 255.0
+      );
+      // Darken toward the bottom of the pillar
+      waterSide *= (1.0 - v_pillarT * 0.4);
+      gl_FragColor = vec4(waterSide, 0.7);
+      return;
     }
 
     // ── Water surface (face type 3) ──
