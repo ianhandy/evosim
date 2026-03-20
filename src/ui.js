@@ -372,7 +372,7 @@ mapCanvas.addEventListener('contextmenu', e => e.preventDefault());
 mapCanvas.addEventListener('wheel', e => {
   e.preventDefault();
   const delta = e.deltaY > 0 ? -0.1 : 0.1;
-  camZoom = Math.max(0.4, Math.min(3.0, camZoom + delta));
+  camZoom = Math.max(0.3, Math.min(8.0, camZoom + delta));
 }, { passive: false });
 
 // Touch controls
@@ -403,7 +403,7 @@ mapCanvas.addEventListener('touchmove', e => {
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    camZoom = Math.max(0.4, Math.min(3.0, touchStartZoom * (dist / touchStartDist)));
+    camZoom = Math.max(0.3, Math.min(8.0, touchStartZoom * (dist / touchStartDist)));
   }
 }, { passive: true });
 mapCanvas.addEventListener('touchend', () => { isDragging = false; });
