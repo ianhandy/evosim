@@ -298,15 +298,13 @@ const FRAG_SRC = `
     vec3 color;
 
     if (biome == 2) {
-      // ── Forest: deep green with smooth variation ──
-      vec3 deepForest = vec3(0.06, 0.16, 0.04);     // darkest forest
-      vec3 midForest = vec3(0.10, 0.22, 0.06);       // mid green
-      vec3 lightForest = vec3(0.14, 0.28, 0.09);     // lighter canopy
-      // Smooth blend based on vegetation + spatial variation
+      // ── Forest: rich green with smooth variation ──
+      vec3 deepForest = vec3(0.10, 0.24, 0.06);      // shaded forest
+      vec3 midForest = vec3(0.16, 0.34, 0.10);       // mid canopy
+      vec3 lightForest = vec3(0.22, 0.42, 0.14);     // sunlit canopy
       float forestT = clamp(v_veg * 0.7 + smoothVar * 0.3, 0.0, 1.0);
       color = mix(deepForest, mix(midForest, lightForest, forestT), forestT);
-      // Slight elevation influence — higher forest is a touch lighter
-      color += vec3(0.01, 0.02, 0.005) * v_elev;
+      color += vec3(0.02, 0.03, 0.01) * v_elev;
 
     } else if (biome == 3) {
       // ── Beach: light warm sand ──
@@ -317,9 +315,9 @@ const FRAG_SRC = `
 
     } else if (biome == 4) {
       // ── Rocky: gray/slate with subtle warm undertones ──
-      vec3 darkSlate = vec3(0.12, 0.12, 0.13);
-      vec3 midGray = vec3(0.20, 0.19, 0.18);
-      vec3 lightSlate = vec3(0.28, 0.26, 0.24);
+      vec3 darkSlate = vec3(0.18, 0.17, 0.16);
+      vec3 midGray = vec3(0.28, 0.27, 0.25);
+      vec3 lightSlate = vec3(0.38, 0.36, 0.33);
       float rockT = clamp(smoothVar * 0.6 + v_elev * 0.4, 0.0, 1.0);
       color = mix(darkSlate, mix(midGray, lightSlate, rockT), rockT);
 
