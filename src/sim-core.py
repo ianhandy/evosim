@@ -134,27 +134,30 @@ def _generate_terrain(seed_str):
     gs = GRID_SIZE
 
     # ── Ocean floor baseline: slightly noisy, all negative ──
-    grid = rng.uniform(-0.50, -0.40, (gs, gs)).astype(np.float32)
+    # Shallow baseline so eruptions easily create land
+    grid = rng.uniform(-0.20, -0.10, (gs, gs)).astype(np.float32)
 
     # ── Plate drift direction (single plate, random direction) ──
     drift_angle = rng.uniform(0, 2 * math.pi)
     drift_dx = math.cos(drift_angle)
     drift_dy = math.sin(drift_angle)
-    drift_speed = rng.uniform(0.3, 0.7)  # cells per epoch
+    drift_speed = rng.uniform(0.3, 0.6)
 
-    # ── Hotspots: fixed mantle plume positions ──
-    num_hotspots = rng.randint(1, 4)  # 1-3 hotspots
+    # ── Hotspots: many plumes spread across the grid ──
+    # More hotspots + higher power = more land coverage (target 70-90%)
+    num_hotspots = max(4, gs // 8)  # 4 at 32, 8 at 64
     hotspots = []
     for _ in range(num_hotspots):
-        hx = rng.uniform(gs * 0.15, gs * 0.85)
-        hy = rng.uniform(gs * 0.15, gs * 0.85)
-        power = rng.uniform(0.06, 0.14)        # eruption deposit per tick
-        radius = rng.uniform(gs * 0.04, gs * 0.10)  # eruption radius
+        hx = rng.uniform(gs * 0.08, gs * 0.92)
+        hy = rng.uniform(gs * 0.08, gs * 0.92)
+        power = rng.uniform(0.08, 0.18)
+        radius = rng.uniform(gs * 0.06, gs * 0.15)
         hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
 
     # ── Simulate geological epochs ──
-    num_epochs = rng.randint(60, 150)
-    snapshot_epoch = rng.randint(num_epochs // 2, num_epochs)  # pick a point in time
+    # More epochs = more eruptions = more land
+    num_epochs = rng.randint(80, 200)
+    snapshot_epoch = rng.randint(int(num_epochs * 0.6), num_epochs)
 
     for epoch in range(num_epochs):
         # ── Eruptions from each hotspot ──
@@ -179,15 +182,13 @@ def _generate_terrain(seed_str):
                                 grid[r, c] += deposit
 
             # ── Island chain trail: walk backward along drift vector ──
-            # Older deposits at decreasing strength behind the hotspot
-            trail_len = int(epoch * drift_speed * 0.4)
+            trail_len = int(epoch * drift_speed * 0.6)
             for step in range(1, min(trail_len, gs)):
-                tr = int(hs['x'] - drift_dx * step * 1.5)
-                tc = int(hs['y'] - drift_dy * step * 1.5)
+                tr = int(hs['x'] - drift_dx * step * 1.2)
+                tc = int(hs['y'] - drift_dy * step * 1.2)
                 if 0 <= tr < gs and 0 <= tc < gs:
-                    # Decreasing strength with distance
-                    strength = hs['power'] * 0.3 / (1 + step * 0.15)
-                    trail_r = max(1, int(hs['radius'] * 0.5))
+                    strength = hs['power'] * 0.5 / (1 + step * 0.1)
+                    trail_r = max(2, int(hs['radius'] * 0.6))
                     for dr in range(-trail_r, trail_r + 1):
                         for dc in range(-trail_r, trail_r + 1):
                             rr, cc = tr + dr, tc + dc
@@ -195,7 +196,7 @@ def _generate_terrain(seed_str):
                                 d = math.sqrt(dr*dr + dc*dc)
                                 if d < trail_r:
                                     t = 1 - d / trail_r
-                                    grid[rr, cc] += strength * t * t * rng.uniform(0.5, 1.0) * 0.1
+                                    grid[rr, cc] += strength * t * t * rng.uniform(0.6, 1.0) * 0.15
 
         # ── Erosion: flat subtraction ──
         for r in range(gs):
@@ -219,24 +220,29 @@ def _generate_terrain(seed_str):
         grid = snapshot
 
     # ── Map to elevation array ──
-    # The grid has negative values (ocean) and positive (land).
-    # Normalize so that sea level (0) maps to our WATER_LEVEL threshold.
-    # Values below 0 → below water level, values above 0 → above water level.
-    # Shift and scale so the range fits 0–1 with sea level at ~0.20
+    # Normalize to 0–1, then set sea level so that 10-30% is water
     lo, hi = grid.min(), grid.max()
     if hi <= lo:
         hi = lo + 1
 
-    # Map 0 (sea level) to 0.20 in our 0-1 range
-    sea_level_in_grid = 0.0
+    # Normalize to 0-1 first
     for r in range(gs):
         for c in range(gs):
-            if grid[r, c] <= sea_level_in_grid:
-                # Underwater: map [lo, 0] → [0, 0.20]
-                elevations[r, c] = max(0, (grid[r, c] - lo) / max(0.001, sea_level_in_grid - lo) * 0.20)
+            elevations[r, c] = (grid[r, c] - lo) / (hi - lo)
+
+    # Find the threshold that gives ~20% water (80% land)
+    sorted_e = np.sort(elevations.ravel())
+    water_target = int(G2 * 0.20)  # 20% water → 80% land
+    sea_threshold = sorted_e[min(water_target, G2 - 1)]
+
+    # Remap: below threshold → [0, 0.20], above → [0.20, 1.0]
+    for r in range(gs):
+        for c in range(gs):
+            e = elevations[r, c]
+            if e <= sea_threshold:
+                elevations[r, c] = (e / max(0.001, sea_threshold)) * 0.20
             else:
-                # Land: map [0, hi] → [0.20, 1.0]
-                elevations[r, c] = min(1.0, 0.20 + (grid[r, c] / max(0.001, hi)) * 0.80)
+                elevations[r, c] = 0.20 + (e - sea_threshold) / max(0.001, 1 - sea_threshold) * 0.80
 
     _assign_biomes()
 

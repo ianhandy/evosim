@@ -28,17 +28,82 @@ export function isReady() { return simReady; }
 export function getEventQueue() { const q = eventQueue; eventQueue = []; return q; }
 
 /**
- * Initialize Pyodide, create shared buffer, load sim code.
+ * Preload Pyodide + packages. Call early so preview and init are fast.
+ */
+let preloaded = false;
+
+export async function preload(onProgress) {
+  if (preloaded) return;
+  onProgress?.('pyodide', 20);
+  pyodide = await loadPyodide();
+  onProgress?.('numpy', 50);
+  await pyodide.loadPackage('numpy');
+  onProgress?.('scipy', 80);
+  await pyodide.loadPackage('scipy');
+  preloaded = true;
+  onProgress?.('ready', 100);
+}
+
+export function isPreloaded() { return preloaded; }
+
+/**
+ * Generate preview terrain using the actual Python sim code.
+ * Returns {elevations: Float32Array, biomes: Uint8Array} for the given seed/size.
+ */
+export async function generatePreviewTerrain(gridSize, seed) {
+  if (!preloaded) return null;
+
+  // Set up minimal globals for terrain gen
+  globalThis._grid_size = gridSize;
+  globalThis._seed = seed;
+  globalThis._species_count = SPECIES_COUNT;
+  globalThis._traits_per_species = TRAITS_PER_SPECIES;
+
+  // Create a temporary layout + buffer for the preview
+  const prevLayout = createLayout(gridSize);
+  const prevBuffer = new ArrayBuffer(prevLayout.totalBytes);
+  const prevViews = createViews(prevBuffer, prevLayout);
+  new Uint8Array(prevBuffer).fill(0);
+
+  // Expose views to Python
+  globalThis._js_globals = prevViews.globals;
+  globalThis._js_elevations = prevViews.elevations;
+  globalThis._js_biomes = prevViews.biomes;
+  globalThis._js_vegetation = prevViews.vegetation;
+  globalThis._js_populations = prevViews.populations;
+  globalThis._js_trait_means = prevViews.traitMeans;
+  globalThis._js_trait_var = prevViews.traitVar;
+  globalThis._js_tile_flags = prevViews.tileFlags;
+  globalThis._js_river_paths = prevViews.riverPaths;
+  globalThis._js_river_meta = prevViews.riverMeta;
+  globalThis._layout_json = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(prevLayout)
+        .filter(([k, v]) => v && v.offset !== undefined)
+        .map(([k, v]) => [k, { offset: v.offset, count: v.count, byteSize: v.byteSize }])
+    )
+  );
+
+  // Load and run sim code (generates terrain + assigns biomes)
+  const simCodeText = await fetch('/sim-core.py').then(r => r.text());
+  await pyodide.runPythonAsync(simCodeText);
+  pyodide.runPython(`_generate_terrain("${seed}")`);
+  pyodide.runPython('_sync_to_buffer()');
+
+  return {
+    elevations: new Float32Array(prevViews.elevations),
+    biomes: new Uint8Array(prevViews.biomes),
+    gridSize,
+  };
+}
+
+/**
+ * Initialize the full simulation (after preload).
  */
 export async function init(gridSize, seed, onProgress) {
-  onProgress?.('pyodide', 10);
-  pyodide = await loadPyodide();
-
-  onProgress?.('numpy', 30);
-  await pyodide.loadPackage('numpy');
-
-  onProgress?.('scipy', 50);
-  await pyodide.loadPackage('scipy');
+  if (!preloaded) {
+    await preload(onProgress);
+  }
 
   onProgress?.('buffer', 60);
 
