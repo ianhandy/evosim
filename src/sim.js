@@ -251,7 +251,13 @@ export function loadGame() {
   try {
     const stateJson = localStorage.getItem('evosim-save');
     if (!stateJson) return false;
-    pyodide.runPython(`load_save_state('''${stateJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}''')`);
+    // Pass JSON via globalThis to avoid string escaping issues
+    globalThis._loadStateJson = stateJson;
+    pyodide.runPython(`
+from js import _loadStateJson
+load_save_state(str(_loadStateJson))
+`);
+    delete globalThis._loadStateJson;
     return true;
   } catch (e) {
     console.error('Load failed:', e);

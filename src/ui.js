@@ -253,8 +253,14 @@ $('btn-begin').addEventListener('click', async () => {
     loader.classList.add('hidden');
     app.classList.remove('hidden');
 
-    // Canvas 2D renderer (WebGL upgrade deferred until shader geometry is correct)
-    mapRenderer = null;
+    // Initialize WebGL renderer
+    mapRenderer = new MapRenderer(mapCanvas);
+    if (mapRenderer.fallback) {
+      console.warn('WebGL init failed, using Canvas 2D fallback');
+      mapRenderer = null;
+    } else {
+      mapRenderer.setup(gridSize);
+    }
 
     // Show active challenge in header
     const badge = $('challenge-badge');
@@ -412,6 +418,11 @@ document.addEventListener('keydown', e => {
 // ── Render loop (decoupled from sim) ──
 const SPECIES_COLORS = ['#DDC165', '#C0392B', '#2ECC71', '#E5591C', '#9B59B6'];
 
+const SEASON_NAMES = ['Winter', 'Spring', 'Summer', 'Autumn'];
+function getSeasonName(val) {
+  return SEASON_NAMES[Math.floor(((val + 0.25) % 1) * 4) % 4];
+}
+
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
@@ -435,9 +446,7 @@ function startRenderLoop() {
 
       // Season
       const seasonVal = views.globals[GLOBAL.SEASON_FACTOR];
-      const seasonNames = ['Winter', 'Spring', 'Summer', 'Autumn'];
-      const seasonIdx = Math.floor(((seasonVal + 0.25) % 1) * 4) % 4;
-      seasonLabel.textContent = seasonNames[seasonIdx];
+      seasonLabel.textContent = getSeasonName(seasonVal);
 
       // Collect population totals for chart
       const pops = [];
@@ -705,8 +714,11 @@ function renderMap(views) {
   }
 
   // ── Rivers (2D paths on tile surfaces) ──
-  // Draw river paths that follow the tile grid, rendered as thick lines
-  // connecting tile centers at their isometric positions
+  function tilePos(r, c) {
+    const idx = r * gs + c;
+    const elev = views.elevations[idx] || 0.2;
+    return isoXY(r, c, elev);
+  }
   const rp = views.riverPaths;
   const rm = views.riverMeta;
   const maxRivers = rm.length / 4;
@@ -1199,7 +1211,7 @@ function renderLifeHistoryChart() {
   // Quadrant labels
   ctx.font = '7px monospace';
   ctx.fillStyle = goldDim;
-  ctx.globalAlpha = 0.4;
+  ctx.globalAlpha = 0.65;
   ctx.textAlign = 'center';
   ctx.fillText('K-selected', pad.l + cw * 0.25, pad.t + 10);
   ctx.fillText('r-selected', pad.l + cw * 0.75, pad.t + ch - 4);
@@ -1261,10 +1273,6 @@ function renderStatsReadouts() {
   const estimatedK = G2 * 50; // rough per-tile K average
   const fitProxy = estimatedK > 0 ? (totalPop / estimatedK).toFixed(3) : '—';
 
-  // Season name
-  const seasonNames = ['Winter', 'Spring', 'Summer', 'Autumn'];
-  const seasonIdx = Math.floor(((season + 0.25) % 1) * 4) % 4;
-
   // Alive count
   let aliveCount = 0;
   for (let s = 0; s < 5; s++) if (views.globals[GLOBAL.TOTAL_POP_0 + s] > 0) aliveCount++;
@@ -1284,10 +1292,10 @@ function renderStatsReadouts() {
     </div>
     <div class="stat-row">
       <div><div class="stat-label">Vegetation Level</div></div>
-      <div class="stat-value">${(vegMean !== undefined ? vegMean : 0).toFixed(2)}</div>
+      <div class="stat-value">${vegMean !== undefined ? vegMean.toFixed(2) : '—'}</div>
     </div>
     <div class="stat-row">
-      <div><div class="stat-label">Season Factor</div><div class="stat-sub">${seasonNames[seasonIdx]}</div></div>
+      <div><div class="stat-label">Season Factor</div><div class="stat-sub">${getSeasonName(season)}</div></div>
       <div class="stat-value">${season.toFixed(3)}</div>
     </div>
     <div class="stat-row">
@@ -1324,11 +1332,14 @@ function renderJournal() {
   if (entries.length === lastJournalCount) return;
   lastJournalCount = entries.length;
 
+  // Only auto-scroll if user is already at the bottom
+  const atBottom = journalFeed.scrollTop + journalFeed.clientHeight >= journalFeed.scrollHeight - 20;
+
   journalFeed.innerHTML = entries.map(e =>
     `<div class="journal-entry type-${e.type}">${e.text}</div>`
   ).join('');
 
-  journalFeed.scrollTop = journalFeed.scrollHeight;
+  if (atBottom) journalFeed.scrollTop = journalFeed.scrollHeight;
 }
 
 // ── Tooltip / Help system ──
@@ -1680,6 +1691,7 @@ $('end-new').addEventListener('click', () => {
   app.classList.add('hidden');
   setup.classList.remove('hidden');
   observationEnded = false;
+  activeChallenge = -1;
   // Reset state
   popHistory.length = 0;
   traitHistory.length = 0;
@@ -1693,7 +1705,10 @@ $('end-new').addEventListener('click', () => {
   lastTraitValues = [-1, -1, -1, -1, -1];
   lastJournalCount = 0;
   lastEpochId = -1;
-  mapRenderer = null;
+  // Re-init WebGL renderer for new grid size
+  mapRenderer = new MapRenderer(mapCanvas);
+  if (mapRenderer.fallback) { mapRenderer = null; }
+  else { mapRenderer.setup(gridSize); }
   challengeState = resetChallengeState();
   currentGen = 0;
   $('challenge-badge').classList.add('hidden');
@@ -1831,7 +1846,9 @@ btnLoadSave.addEventListener('click', async () => {
     loader.classList.add('hidden');
     app.classList.remove('hidden');
 
-    mapRenderer = null;
+    mapRenderer = new MapRenderer(mapCanvas);
+    if (mapRenderer.fallback) { mapRenderer = null; }
+    else { mapRenderer.setup(gridSize); }
 
     resizeCanvases();
     startRenderLoop();

@@ -698,7 +698,7 @@ html, body {
 .challenge-btn.active .challenge-hint { color: rgba(0,0,0,0.5); }
 .challenge-hint {
   font-size: 9px; color: var(--border);
-  white-space: nowrap; flex-shrink: 0;
+  flex-shrink: 1;
 }
 
 /* ── Challenge Badge in Header ── */
