@@ -110,12 +110,27 @@ const VERT_SRC = `
     }
 
     // Pillar from surface to global minimum
+    // For water tiles, side faces start at water surface (not seafloor)
+    // so the pillar is visible from the waterline down
     float floorElev = max(0.0, u_minElev - 0.02);
-    float surfaceIz = renderElev * hScale;
-    float floorIz = floorElev * hScale;
-    float pillarH = max(0.0, surfaceIz - floorIz);
-
     float waterIz = WATER_LEVEL * hScale;
+    float surfaceIz = renderElev * hScale;
+    bool isWater = elev < WATER_LEVEL;
+    float sideTopIz = isWater ? waterIz : surfaceIz;  // pillar starts here
+    float floorIz = floorElev * hScale;
+    float pillarH = max(0.0, sideTopIz - floorIz);
+
+    // Check if this water tile needs side faces:
+    // Only at map edges or adjacent to land tiles
+    bool waterNeedsSides = true;
+    if (isWater) {
+      // If all 4 neighbors are also water, skip side faces
+      bool allWaterNeighbors = eN < WATER_LEVEL && eS < WATER_LEVEL
+                            && eW < WATER_LEVEL && eE < WATER_LEVEL;
+      // Also need sides at grid edges
+      bool atEdge = row < 0.5 || col < 0.5 || row > gs - 1.5 || col > gs - 1.5;
+      waterNeedsSides = !allWaterNeighbors || atEdge;
+    }
 
     vec2 pos;
     v_pillarT = 0.0;
@@ -128,19 +143,27 @@ const VERT_SRC = `
       pos.y = iy - surfaceIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
       // Face 1: right side pillar
-      float topY = iy - surfaceIz;
-      pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
-      v_pillarT = a_quad.x;
+      if (isWater && !waterNeedsSides) {
+        // Hide: collapse to zero-area triangle
+        pos = vec2(0.0, 0.0);
+      } else {
+        float topY = iy - sideTopIz;
+        pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
+        pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
+        v_pillarT = a_quad.x;
+      }
     } else if (a_faceType < 2.5) {
       // Face 2: left side pillar
-      float topY = iy - surfaceIz;
-      pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
-      v_pillarT = a_quad.x;
+      if (isWater && !waterNeedsSides) {
+        pos = vec2(0.0, 0.0);
+      } else {
+        float topY = iy - sideTopIz;
+        pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
+        pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
+        v_pillarT = a_quad.x;
+      }
     } else {
-      // Face 3: water surface
-      // Water surface: flat at sea level (wave animation moved to fragment shader)
+      // Face 3: water surface — flat at sea level
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
