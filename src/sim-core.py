@@ -440,10 +440,10 @@ def _generate_terrain(seed_str):
                     continue
                 peaks_placed.append((er, ec))
 
-        # Build each peak with radial erosion channels (Diamond Head style)
-        # The cone is built first, then channels are carved INTO it.
-        # The ridges between channels are the exposed rocky spines.
-        # Vegetation grows in the channels where water collects.
+        # Store peak data for ridgeline connections
+        peak_data = []
+
+        # Build each peak with sharp ridges and erosion channels
         for pi, (pr, pc) in enumerate(peaks_placed):
             local_elev = grid[pr, pc]
             v_radius = rng.uniform(gs * 0.08, gs * 0.16)
@@ -455,52 +455,101 @@ def _generate_terrain(seed_str):
             t = np.clip(1 - dist / v_radius, 0, 1)
             cone = v_height * t * t * (3 - 2 * t)
 
-            # Caldera depression at summit
+            # Caldera
             caldera_r = v_radius * 0.2
             caldera_dip = np.where(dist < caldera_r,
                 v_height * 0.1 * (1 - dist / caldera_r), 0)
 
-            # Add the cone first
             grid += np.where(in_cone, cone - caldera_dip, 0)
 
-            # ── Radial erosion channels ──
-            # Carve valleys radiating outward from near the summit.
-            # Water runs down these channels, so vegetation fills them.
-            # The ridges between channels stay high and rocky.
-            num_channels = rng.randint(5, 9)  # 5-8 channels
+            # ── Radial ridge spines + erosion channels ──
+            # Channels are carved, then ridge spines are ADDED between them.
+            # This creates sharp raised ridges with valleys between.
+            num_channels = rng.randint(6, 10)
+            channel_angles = []
             for ci in range(num_channels):
-                # Evenly spaced around the peak + random jitter
                 base_angle = ci * 2 * math.pi / num_channels
-                ch_angle = base_angle + rng.uniform(-0.3, 0.3)
+                ch_angle = base_angle + rng.uniform(-0.2, 0.2)
+                channel_angles.append(ch_angle)
                 ch_dx = math.cos(ch_angle)
                 ch_dy = math.sin(ch_angle)
 
-                # Channel starts near summit, extends well past the base
-                ch_start = v_radius * rng.uniform(0.05, 0.15)
-                ch_end = v_radius * rng.uniform(1.2, 1.8)
-                # Wide enough to be visible: at least 2-4 tiles at gs=128
-                ch_width = max(2.5, v_radius * rng.uniform(0.2, 0.4))
-                ch_depth = v_height * rng.uniform(0.35, 0.65)
+                ch_start = v_radius * rng.uniform(0.05, 0.12)
+                ch_end = v_radius * rng.uniform(1.3, 2.0)
+                ch_width = max(2.5, v_radius * rng.uniform(0.2, 0.35))
+                ch_depth = v_height * rng.uniform(0.4, 0.7)
 
-                # Distance along and perpendicular to channel axis
                 along = (rows_v - pr) * ch_dx + (cols_v - pc) * ch_dy
                 perp = np.abs((rows_v - pr) * (-ch_dy) + (cols_v - pc) * ch_dx)
-
-                # Channel mask: along the ray, within width
                 in_channel = (along > ch_start) & (along < ch_end) & (perp < ch_width)
 
-                # Depth tapers: deepest near the peak, shallows toward the base
-                # Also tapers at the edges (perpendicular)
                 ch_along_t = np.clip((along - ch_start) / max(0.1, ch_end - ch_start), 0, 1)
                 ch_perp_t = np.clip(1 - perp / ch_width, 0, 1)
-                # Deeper near summit, shallower at base
                 carve = ch_depth * (1 - ch_along_t * 0.7) * ch_perp_t * ch_perp_t
 
-                # Only carve where the cone exists
                 grid -= np.where(in_channel & in_cone, carve, 0)
+
+            # ── Sharp ridge spines between channels ──
+            # Add extra elevation along the angular bisectors between channels
+            for ci in range(num_channels):
+                a1 = channel_angles[ci]
+                a2 = channel_angles[(ci + 1) % num_channels]
+                # Bisector angle
+                ridge_angle = (a1 + a2) / 2
+                if abs(a2 - a1) > math.pi:
+                    ridge_angle += math.pi
+                rdx = math.cos(ridge_angle)
+                rdy = math.sin(ridge_angle)
+
+                ridge_len = v_radius * rng.uniform(1.0, 1.6)
+                ridge_width = max(1.5, v_radius * rng.uniform(0.06, 0.14))
+                ridge_height = v_height * rng.uniform(0.15, 0.35)
+
+                along = (rows_v - pr) * rdx + (cols_v - pc) * rdy
+                perp = np.abs((rows_v - pr) * (-rdy) + (cols_v - pc) * rdx)
+                in_ridge = (along > 0) & (along < ridge_len) & (perp < ridge_width)
+
+                r_along_t = np.clip(1 - along / ridge_len, 0, 1)
+                r_perp_t = np.clip(1 - perp / ridge_width, 0, 1)
+                # Sharp triangular cross-section for the ridge spine
+                spine = ridge_height * r_along_t * r_perp_t
+
+                grid += np.where(in_ridge, spine, 0)
+
+            peak_data.append((pr, pc, v_radius, v_height))
 
             if 0 <= pr < gs and 0 <= pc < gs:
                 tile_flags[pr, pc] |= 2
+
+        # ── Peak-to-peak ridgelines ──
+        # Connect nearby peaks with elevated terrain along the fault direction.
+        # Creates visible mountain range spines.
+        for i in range(len(peak_data)):
+            for j in range(i + 1, len(peak_data)):
+                pr1, pc1, rad1, h1 = peak_data[i]
+                pr2, pc2, rad2, h2 = peak_data[j]
+                dx = pr2 - pr1
+                dy = pc2 - pc1
+                dist_peaks = math.sqrt(dx * dx + dy * dy)
+                # Only connect peaks within 2× the average radius
+                if dist_peaks > (rad1 + rad2) * 2.0:
+                    continue
+                if dist_peaks < 1:
+                    continue
+                ndx, ndy = dx / dist_peaks, dy / dist_peaks
+                ridge_h = min(h1, h2) * rng.uniform(0.3, 0.6)
+                ridge_w = max(1.5, (rad1 + rad2) * 0.08)
+
+                along = (rows_v - pr1) * ndx + (cols_v - pc1) * ndy
+                perp = np.abs((rows_v - pr1) * (-ndy) + (cols_v - pc1) * ndx)
+                in_ridge = (along > 0) & (along < dist_peaks) & (perp < ridge_w)
+
+                # Height peaks in the middle, dips at the endpoints
+                mid_t = 1 - np.abs(along / dist_peaks - 0.5) * 2
+                p_t = np.clip(1 - perp / ridge_w, 0, 1)
+                spine = ridge_h * mid_t * p_t
+
+                grid += np.where(in_ridge, spine, 0)
 
     # ── Edge ramp — smoothly slope terrain into ocean near grid edges ──
     # Applied on raw grid (before normalization) so the terrain itself
