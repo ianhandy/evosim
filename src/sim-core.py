@@ -350,24 +350,80 @@ def _generate_terrain(seed_str):
     else:
         grid = cropped.copy()
 
-    # ── Detail noise pass — break up the smooth volcanic slopes ──
+    # ── Detail noise pass — multi-octave for natural terrain texture ──
+    # Fine detail: ridges, gullies, surface roughness
     detail = rng.rand(gs, gs).astype(np.float32)
-    detail = gaussian_filter(detail, sigma=gs * 0.02, mode='wrap')
+    detail = gaussian_filter(detail, sigma=gs * 0.015, mode='wrap')
     detail_lo, detail_hi = detail.min(), detail.max()
     if detail_hi > detail_lo:
         detail = (detail - detail_lo) / (detail_hi - detail_lo)
 
-    # Medium-scale noise for hills and valleys
+    # Medium: rolling hills and valleys
     medium = rng.rand(gs, gs).astype(np.float32)
-    medium = gaussian_filter(medium, sigma=gs * 0.06, mode='wrap')
+    medium = gaussian_filter(medium, sigma=gs * 0.05, mode='wrap')
     med_lo, med_hi = medium.min(), medium.max()
     if med_hi > med_lo:
         medium = (medium - med_lo) / (med_hi - med_lo)
 
-    # Blend noise into the terrain — more effect on land, less on deep ocean
+    # Coarse: broad elevation undulation
+    coarse = rng.rand(gs, gs).astype(np.float32)
+    coarse = gaussian_filter(coarse, sigma=gs * 0.12, mode='wrap')
+    co_lo, co_hi = coarse.min(), coarse.max()
+    if co_hi > co_lo:
+        coarse = (coarse - co_lo) / (co_hi - co_lo)
+
+    # Blend — land gets all three octaves, ocean gets subtle fine detail
     land_shallow = grid > -0.05
-    grid += np.where(land_shallow, (detail - 0.5) * 0.06 + (medium - 0.5) * 0.04,
-                                   (detail - 0.5) * 0.02)
+    grid += np.where(land_shallow,
+        (detail - 0.5) * 0.08 + (medium - 0.5) * 0.06 + (coarse - 0.5) * 0.04,
+        (detail - 0.5) * 0.02)
+
+    # ── Volcanoes — sharp conical peaks on the highest terrain ──
+    # Find the top N elevation tiles and place steep volcanic cones there.
+    # These are the geological hotspots that built the island — their peaks
+    # should visibly rise above the surrounding terrain.
+    land_elev = np.where(grid > 0, grid, 0)
+    if land_elev.max() > 0:
+        # Number of volcanoes scales with grid size
+        num_volcanoes = max(2, gs // 12)
+        # Find peak candidates — local maxima above 70th percentile of land
+        land_vals = grid[grid > 0]
+        if len(land_vals) > 0:
+            threshold = np.percentile(land_vals, 70)
+            peak_mask = grid > threshold
+            peak_coords = np.argwhere(peak_mask)
+            if len(peak_coords) > num_volcanoes:
+                # Spread them out — pick peaks with maximum spacing
+                chosen = [peak_coords[rng.randint(0, len(peak_coords))]]
+                for _ in range(num_volcanoes - 1):
+                    dists = np.array([
+                        min(abs(p[0] - c[0]) + abs(p[1] - c[1]) for c in chosen)
+                        for p in peak_coords
+                    ])
+                    chosen.append(peak_coords[np.argmax(dists)])
+                peak_coords = np.array(chosen)
+
+            rows_v = np.arange(gs)[:, None]
+            cols_v = np.arange(gs)[None, :]
+            for pr, pc in peak_coords[:num_volcanoes]:
+                pr, pc = int(pr), int(pc)
+                # Volcano radius and height scale with local elevation
+                local_elev = grid[pr, pc]
+                v_radius = rng.uniform(gs * 0.03, gs * 0.06)
+                v_height = rng.uniform(0.12, 0.25) * (0.5 + local_elev)
+                dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
+                in_cone = dist < v_radius
+                # Steep conical profile with slight concave summit (caldera hint)
+                t = 1 - dist / v_radius
+                cone = v_height * t * t
+                # Slight caldera depression at the very peak
+                caldera_r = v_radius * 0.15
+                caldera_dip = np.where(dist < caldera_r,
+                    v_height * 0.15 * (1 - dist / caldera_r), 0)
+                grid += np.where(in_cone, cone - caldera_dip, 0)
+                # Mark the summit tile as volcanic
+                if 0 <= pr < gs and 0 <= pc < gs:
+                    tile_flags[pr, pc] |= 2
 
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
