@@ -440,7 +440,10 @@ def _generate_terrain(seed_str):
                     continue
                 peaks_placed.append((er, ec))
 
-        # Build each peak with ridge veins
+        # Build each peak with radial erosion channels (Diamond Head style)
+        # The cone is built first, then channels are carved INTO it.
+        # The ridges between channels are the exposed rocky spines.
+        # Vegetation grows in the channels where water collects.
         for pi, (pr, pc) in enumerate(peaks_placed):
             local_elev = grid[pr, pc]
             v_radius = rng.uniform(gs * 0.08, gs * 0.16)
@@ -448,49 +451,52 @@ def _generate_terrain(seed_str):
             dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
             in_cone = dist < v_radius
 
-            # Smooth bell-shaped profile
+            # Smooth bell-shaped cone
             t = np.clip(1 - dist / v_radius, 0, 1)
             cone = v_height * t * t * (3 - 2 * t)
 
-            # Caldera depression
+            # Caldera depression at summit
             caldera_r = v_radius * 0.2
             caldera_dip = np.where(dist < caldera_r,
                 v_height * 0.1 * (1 - dist / caldera_r), 0)
 
-            # ── Ridge veins: elongated bumps along the fault direction ──
-            # Use the nearest fault's direction for vein orientation
-            best_fault = faults[0] if faults else (0, 0, 1, 0)
-            if len(faults) > 1:
-                best_dist = 999
-                for f in faults:
-                    fd = abs((pr - f[0] * scale * 0.65) * f[3] - (pc - f[1] * scale * 0.65) * f[2])
-                    if fd < best_dist:
-                        best_dist = fd
-                        best_fault = f
-            _, _, vdx, vdy = best_fault
-
-            # 2-3 ridge veins per peak, extending outward along fault direction
-            for vi in range(rng.randint(2, 4)):
-                # Alternate sides of the peak
-                side = 1.0 if vi % 2 == 0 else -1.0
-                # Vein angle: along fault ± some spread
-                vein_angle = math.atan2(vdy, vdx) + side * rng.uniform(0.3, 1.2)
-                vein_dx = math.cos(vein_angle)
-                vein_dy = math.sin(vein_angle)
-                vein_len = v_radius * rng.uniform(0.8, 1.5)
-                vein_width = v_radius * rng.uniform(0.15, 0.3)
-                vein_height = v_height * rng.uniform(0.15, 0.35)
-
-                # Vein: distance along direction and perpendicular
-                along = (rows_v - pr) * vein_dx + (cols_v - pc) * vein_dy
-                perp = np.abs((rows_v - pr) * (-vein_dy) + (cols_v - pc) * vein_dx)
-                in_vein = (along > 0) & (along < vein_len) & (perp < vein_width)
-                vein_t = np.clip(1 - along / vein_len, 0, 1)
-                vein_p = np.clip(1 - perp / vein_width, 0, 1)
-                vein_elev = vein_height * vein_t * vein_p
-                grid += np.where(in_vein, vein_elev, 0)
-
+            # Add the cone first
             grid += np.where(in_cone, cone - caldera_dip, 0)
+
+            # ── Radial erosion channels ──
+            # Carve valleys radiating outward from near the summit.
+            # Water runs down these channels, so vegetation fills them.
+            # The ridges between channels stay high and rocky.
+            num_channels = rng.randint(5, 9)  # 5-8 channels
+            for ci in range(num_channels):
+                # Evenly spaced around the peak + random jitter
+                base_angle = ci * 2 * math.pi / num_channels
+                ch_angle = base_angle + rng.uniform(-0.3, 0.3)
+                ch_dx = math.cos(ch_angle)
+                ch_dy = math.sin(ch_angle)
+
+                # Channel starts partway up the cone, extends past the base
+                ch_start = v_radius * rng.uniform(0.1, 0.25)
+                ch_end = v_radius * rng.uniform(1.0, 1.4)
+                ch_width = v_radius * rng.uniform(0.08, 0.18)
+                ch_depth = v_height * rng.uniform(0.25, 0.5)
+
+                # Distance along and perpendicular to channel axis
+                along = (rows_v - pr) * ch_dx + (cols_v - pc) * ch_dy
+                perp = np.abs((rows_v - pr) * (-ch_dy) + (cols_v - pc) * ch_dx)
+
+                # Channel mask: along the ray, within width
+                in_channel = (along > ch_start) & (along < ch_end) & (perp < ch_width)
+
+                # Depth tapers: deepest near the peak, shallows toward the base
+                # Also tapers at the edges (perpendicular)
+                ch_along_t = np.clip((along - ch_start) / max(0.1, ch_end - ch_start), 0, 1)
+                ch_perp_t = np.clip(1 - perp / ch_width, 0, 1)
+                # Deeper near summit, shallower at base
+                carve = ch_depth * (1 - ch_along_t * 0.7) * ch_perp_t * ch_perp_t
+
+                # Only carve where the cone exists
+                grid -= np.where(in_channel & in_cone, carve, 0)
 
             if 0 <= pr < gs and 0 <= pc < gs:
                 tile_flags[pr, pc] |= 2

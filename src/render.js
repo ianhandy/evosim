@@ -206,10 +206,10 @@ const VERT_SRC = `
     v_flowData = flowRaw * 255.0; // decode to 0-8 direction codes
 
     // Depth: tiles further back (lower rRow+rCol) have higher z (further from camera)
-    // Also factor in elevation so tall tiles occlude correctly
     float depth = (rRow + rCol) / (gs * 2.0) - renderElev * 0.1;
-    // Map to NDC z range [-1, 1], back=1 front=-1
     float z = 1.0 - depth * 2.0;
+    // Water surface sits slightly behind terrain so land always wins at coastlines
+    if (a_faceType > 2.5) z += 0.001;
     gl_Position = vec4(pos.x, -pos.y, z, 1.0);
   }
 `;
