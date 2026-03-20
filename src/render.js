@@ -450,6 +450,13 @@ const FRAG_SRC = `
     // Side face gradient
     if (v_faceType > 0.5 && v_faceType < 2.5) {
       shade *= (1.0 - v_pillarT * 0.5);
+
+      // Coastal land sides: blend toward dark ocean color so they
+      // don't show as gray patches against the water
+      if (v_coastal > 0.1 && !isWaterFrag) {
+        vec3 coastSide = vec3(0.04, 0.10, 0.18);
+        color = mix(color, coastSide, v_coastal * 0.7);
+      }
     }
 
     color *= shade;
