@@ -280,7 +280,7 @@ def _generate_terrain(seed_str):
         # Padding is proportional to the land extent so islands get more sea
         land_h = r_max - r_min + 1
         land_w = c_max - c_min + 1
-        pad = max(3, int(max(land_h, land_w) * 0.15))
+        pad = max(4, int(max(land_h, land_w) * 0.25))
 
         # Make the crop square (the output grid is square)
         crop_size = max(land_h, land_w) + pad * 2
@@ -341,26 +341,6 @@ def _generate_terrain(seed_str):
     land_shallow = grid > -0.05
     grid += np.where(land_shallow, (detail - 0.5) * 0.06 + (medium - 0.5) * 0.04,
                                    (detail - 0.5) * 0.02)
-
-    # ── Edge-to-interior gradient ──
-    # Gentle push at the very edges to ensure clean ocean border.
-    # Since we cropped to fit all land, this only affects the outermost
-    # few tiles — no land gets submerged.
-    edge_noise = rng.rand(gs, gs).astype(np.float32)
-    edge_noise = gaussian_filter(edge_noise, sigma=gs * 0.08, mode='wrap')
-    en_lo, en_hi = edge_noise.min(), edge_noise.max()
-    if en_hi > en_lo:
-        edge_noise = (edge_noise - en_lo) / (en_hi - en_lo)
-
-    border_depth = gs * 0.08  # thin border — just ensure edges are ocean
-    row_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
-    col_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
-    edge_dist = np.minimum(row_dist[:, None], col_dist[None, :]).astype(np.float32)
-    local_border = border_depth * (0.5 + edge_noise * 1.0)
-    in_border = edge_dist < local_border
-    t_border = np.where(in_border, edge_dist / np.maximum(local_border, 0.001), 0)
-    push = (1 - t_border) ** 2 * 0.15  # gentle push
-    grid -= np.where(in_border, push, 0)
 
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
