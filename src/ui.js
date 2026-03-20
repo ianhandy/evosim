@@ -31,6 +31,7 @@ let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
 let mapRenderer = null; // WebGL renderer (null = use Canvas 2D fallback)
+let debugMode = true;   // default on
 
 // Camera state
 let camTilt = 0.5;   // 0.2 (flat) to 0.8 (steep)
@@ -241,6 +242,7 @@ seedInput.addEventListener('input', schedulePreview);
 document.querySelectorAll('.size-btn').forEach(b => b.addEventListener('click', () => setTimeout(schedulePreview, 10)));
 
 $('btn-begin').addEventListener('click', async () => {
+  debugMode = $('debug-toggle')?.checked ?? true;
   setup.classList.add('hidden');
   loader.classList.remove('hidden');
   loaderFill.style.width = '0%';
@@ -278,6 +280,10 @@ $('btn-begin').addEventListener('click', async () => {
     } else {
       badge.classList.add('hidden');
     }
+
+    // Show/hide debug panel
+    const debugPanel = $('debug-panel');
+    if (debugMode && debugPanel) debugPanel.classList.remove('hidden');
 
     resizeCanvases();
     startRenderLoop();
@@ -2266,4 +2272,60 @@ sim.preload((phase, pct) => {
 }).catch(err => {
   loaderMsg.textContent = 'Error: ' + err.message;
   console.error(err);
+});
+
+// ── Debug controls ──
+$('debug-spawn-river')?.addEventListener('click', () => {
+  const result = sim.debugSpawnRiver();
+  console.log('Debug:', result);
+});
+$('debug-drought')?.addEventListener('click', () => sim.debugTriggerEvent('drought'));
+$('debug-disease')?.addEventListener('click', () => sim.debugTriggerEvent('disease'));
+$('debug-bloom')?.addEventListener('click', () => sim.debugTriggerEvent('algal_bloom'));
+$('debug-surge')?.addEventListener('click', () => sim.debugTriggerEvent('tidal_surge'));
+$('debug-eruption')?.addEventListener('click', () => sim.debugTriggerEvent('eruption'));
+
+// Tile click for debug info (always works, shows in debug panel)
+mapCanvas.addEventListener('click', e => {
+  if (!debugMode) return;
+  const views = sim.getViews();
+  if (!views) return;
+  const gs = sim.getLayout().gridSize;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = mapCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * dpr;
+  const my = (e.clientY - rect.top) * dpr;
+
+  // Reverse isometric: find closest tile to click position
+  const tileW = (rect.width / gs) * 0.85 * camZoom * dpr;
+  const tileH = tileW * camTilt;
+  const hScale = 160 * camZoom / rect.height * 2.0;
+  const cx = rect.width * dpr / 2 + camPanX * dpr;
+  const cy = rect.height * dpr / 2 + camPanY * dpr;
+
+  let bestR = 0, bestC = 0, bestDist = Infinity;
+  for (let r = 0; r < gs; r++) {
+    for (let c = 0; c < gs; c++) {
+      const elev = views.elevations[r * gs + c];
+      const ix = (c - r) * tileW * 0.5;
+      const iy = (c + r) * tileH * 0.5;
+      const iz = elev * hScale;
+      const sx = cx + ix;
+      const sy = cy + iy - iz;
+      const dx = mx - sx, dy = my - sy;
+      const d = dx * dx + dy * dy;
+      if (d < bestDist) { bestDist = d; bestR = r; bestC = c; }
+    }
+  }
+
+  const infoJson = sim.debugGetTileInfo(bestR, bestC);
+  const info = JSON.parse(infoJson);
+  const tileInfoEl = $('debug-tile-info');
+  if (tileInfoEl && info.r !== undefined) {
+    const pops = Object.entries(info.populations || {}).map(([k,v]) => `${k}:${v}`).join(' ');
+    tileInfoEl.innerHTML = `<b>(${info.r},${info.c})</b> ${info.biome} · E:${info.elevation} V:${info.vegetation}` +
+      (info.has_river ? ' · <span style="color:#4a9eff">River</span>' : '') +
+      (info.volcanic ? ' · <span style="color:#E5591C">Volcanic</span>' : '') +
+      (pops ? `<br>${pops}` : '');
+  }
 });

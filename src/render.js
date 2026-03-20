@@ -294,6 +294,17 @@ const FRAG_SRC = `
         if (v_coastal > 0.3 && n3 > 0.7) {
           color *= 0.92; // darker wet spot
         }
+      } else if (biome == 4) {
+        // Rocky/volcanic tiles: craggy dark rock
+        vec3 darkRock = vec3(0.08, 0.06, 0.05);
+        vec3 lightRock = vec3(0.15, 0.12, 0.09);
+        float rockPattern = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
+        color = mix(darkRock, lightRock, rockPattern);
+        // Cracks
+        float crack = abs(n1 - n2);
+        if (crack < 0.08) {
+          color *= 0.55;
+        }
       }
     }
 
@@ -389,19 +400,13 @@ const FLOW_FRAG_RIVER = `
   varying float v_pathT;
   varying float v_side;
   void main() {
-    // Animated flow along the path
-    float flow = 0.5 + 0.5 * sin((v_pathT * 8.0 - u_time * 1.5) * 6.28);
-    float ripple = 0.5 + 0.5 * sin((v_pathT * 16.0 - u_time * 2.0) * 6.28);
+    // Static river blue — darker at center, lighter at edges
+    vec3 color = vec3(0.08, 0.22, 0.45);
+    color += vec3(0.02, 0.04, 0.06) * abs(v_side);
 
-    vec3 deep = vec3(0.06, 0.18, 0.38);
-    vec3 light = vec3(0.14, 0.32, 0.55);
-    vec3 color = mix(deep, light, flow * 0.5 + ripple * 0.15);
-
-    // Fade at edges of ribbon
-    float edgeFade = 1.0 - abs(v_side) * 0.3;
-    float alpha = 0.8 * edgeFade;
-
-    gl_FragColor = vec4(color, alpha);
+    // Soft edge fade
+    float edgeFade = smoothstep(1.0, 0.6, abs(v_side));
+    gl_FragColor = vec4(color, 0.85 * edgeFade);
   }
 `;
 
@@ -411,24 +416,12 @@ const FLOW_FRAG_LAVA = `
   varying float v_pathT;
   varying float v_side;
   void main() {
-    // Slow molten flow
-    float flow = 0.5 + 0.5 * sin((v_pathT * 5.0 - u_time * 0.4) * 6.28);
-    float flicker = 0.5 + 0.5 * sin((v_pathT * 12.0 - u_time * 1.0 + v_side * 3.0) * 6.28);
+    // Static lava red — bright center, darker edges
+    vec3 color = vec3(0.75, 0.12, 0.02);
+    color += vec3(0.15, 0.03, 0.0) * (1.0 - abs(v_side));
 
-    vec3 crust = vec3(0.18, 0.04, 0.0);
-    vec3 molten = vec3(0.95, 0.35, 0.05);
-    vec3 glow = vec3(1.0, 0.8, 0.15);
-
-    vec3 color = mix(crust, molten, flow * 0.6);
-    // Hot veins
-    if (flicker > 0.7) {
-      color = mix(color, glow, (flicker - 0.7) * 2.5);
-    }
-
-    float edgeFade = 1.0 - abs(v_side) * 0.2;
-    float alpha = 0.9 * edgeFade;
-
-    gl_FragColor = vec4(color, alpha);
+    float edgeFade = smoothstep(1.0, 0.6, abs(v_side));
+    gl_FragColor = vec4(color, 0.9 * edgeFade);
   }
 `;
 

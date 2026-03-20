@@ -992,3 +992,48 @@ html, body {
   .region-canvas { height: 220px; }
   #species-detail-canvas { height: 260px; }
 }
+
+/* ── Debug Panel ── */
+.debug-panel {
+  position: absolute;
+  top: 8px; right: 8px;
+  z-index: 20;
+  background: rgba(0,0,0,0.75);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex; flex-wrap: wrap;
+  gap: 3px; align-items: center;
+  max-width: 260px;
+  backdrop-filter: blur(4px);
+}
+.debug-title {
+  font-size: 8px; color: var(--orange);
+  text-transform: uppercase; letter-spacing: 1px;
+  width: 100%; margin-bottom: 2px;
+}
+.debug-btn {
+  font-size: 8px; padding: 2px 6px;
+  border-color: var(--orange);
+  color: var(--orange);
+}
+.debug-btn:hover {
+  background: var(--orange); color: var(--bg);
+}
+.debug-tile-info {
+  width: 100%;
+  font-size: 9px; color: var(--dim);
+  line-height: 1.4;
+  margin-top: 4px;
+  min-height: 14px;
+}
+
+/* ── Setup toggle ── */
+.toggle-label {
+  font-size: 10px; color: var(--dim);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer;
+}
+.toggle-label input[type="checkbox"] {
+  accent-color: var(--gold);
+}

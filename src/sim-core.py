@@ -968,16 +968,20 @@ _next_river_id = 0
 
 
 def _spawn_river():
-    """Stochastically spawn a river at high elevation."""
+    """Stochastically spawn a river at mid-to-high elevation (not peaks)."""
     global _next_river_id
     if random.random() > RIVER_SPAWN_PROB:
         return
-    # Find high-elevation tiles without rivers
-    high_no_river = (elevations > 0.7) & ((tile_flags & 1) == 0)
-    if not np.any(high_no_river):
+    # Find mid-elevation tiles: above forest line but below mountain peaks
+    # Rivers originate from inland hills/ridges, not volcanic summits
+    candidates = (elevations > 0.35) & (elevations < 0.65) & ((tile_flags & 1) == 0)
+    if not np.any(candidates):
+        # Fallback: any elevated tile that's not a peak
+        candidates = (elevations > 0.30) & (elevations < 0.80) & ((tile_flags & 1) == 0)
+    if not np.any(candidates):
         return
-    # Pick highest
-    masked = np.where(high_no_river, elevations, -1)
+    # Pick the highest candidate (but still not a peak)
+    masked = np.where(candidates, elevations, -1)
     idx = np.unravel_index(np.argmax(masked), masked.shape)
     r, c = int(idx[0]), int(idx[1])
     river = {
@@ -1808,6 +1812,94 @@ def flush_events():
 def set_lod(level):
     global lod_level
     lod_level = level
+
+
+# ── DEBUG API ────────────────────────────────────────────────────────────────
+
+def debug_spawn_river():
+    """Force-spawn a river immediately."""
+    global _next_river_id
+    candidates = (elevations > 0.35) & (elevations < 0.65) & ((tile_flags & 1) == 0)
+    if not np.any(candidates):
+        candidates = (elevations > 0.30) & (elevations < 0.80) & ((tile_flags & 1) == 0)
+    if not np.any(candidates):
+        return 'No valid spawn point'
+    masked = np.where(candidates, elevations, -1)
+    idx = np.unravel_index(np.argmax(masked), masked.shape)
+    r, c = int(idx[0]), int(idx[1])
+    river = {
+        'id': _next_river_id, 'path': [(r, c)], 'path_set': {(r, c)},
+        'age': 0, 'width': 1, 'active': True, 'stall_gens': 0,
+    }
+    _next_river_id += 1
+    tile_flags[r, c] |= 1
+    rivers.append(river)
+    events_buffer.append({'gen': generation, 'type': 'river_spawn',
+        'text': f'Gen {generation}. [DEBUG] River spawned at ({r},{c}).'})
+    _sync_rivers_to_buffer()
+    return f'River spawned at ({r},{c})'
+
+
+def debug_trigger_event(event_type):
+    """Force-trigger an environmental event."""
+    season = _season()
+    if event_type == 'drought':
+        duration = random.randint(30, 80)
+        active_events.append({'type': 'drought', 'start': generation, 'duration': duration})
+        events_buffer.append({'gen': generation, 'type': 'drought',
+            'text': f'Gen {generation}. [DEBUG] Drought triggered. Duration: {duration} gens.'})
+    elif event_type == 'disease':
+        target = random.randint(0, NUM_SPECIES - 1)
+        coords = np.argwhere(pops[:, :, target] > 10)
+        if len(coords) > 0:
+            er, ec = coords[random.randint(0, len(coords) - 1)]
+            er, ec = int(er), int(ec)
+            active_events.append({'type': 'disease', 'start': generation, 'duration': 20,
+                'species': target, 'epicenter': (er, ec)})
+            events_buffer.append({'gen': generation, 'type': 'disease',
+                'text': f'Gen {generation}. [DEBUG] Disease targeting species {target} at ({er},{ec}).'})
+    elif event_type == 'algal_bloom':
+        active_events.append({'type': 'algal_bloom', 'start': generation, 'duration': 40})
+        events_buffer.append({'gen': generation, 'type': 'algal_bloom',
+            'text': f'Gen {generation}. [DEBUG] Algal bloom triggered.'})
+    elif event_type == 'tidal_surge':
+        active_events.append({'type': 'tidal_surge', 'start': generation, 'duration': 25})
+        events_buffer.append({'gen': generation, 'type': 'tidal_surge',
+            'text': f'Gen {generation}. [DEBUG] Tidal surge triggered.'})
+    elif event_type == 'eruption':
+        # Force eruption on a random plate
+        if tectonic_plates:
+            plate = random.choice(tectonic_plates)
+            _volcanic_eruption(plate)
+            events_buffer.append({'gen': generation, 'type': 'debug',
+                'text': f'Gen {generation}. [DEBUG] Volcanic eruption forced.'})
+            _sync_to_buffer()
+            _sync_lava_to_buffer()
+    return f'{event_type} triggered'
+
+
+def debug_get_tile_info(r, c):
+    """Return detailed info about a specific tile."""
+    r, c = int(r), int(c)
+    if r < 0 or r >= GRID_SIZE or c < 0 or c >= GRID_SIZE:
+        return '{}'
+    biome_names = ['Deep Water', 'Shallow Marsh', 'Forest', 'Beach', 'Rocky Shore']
+    info = {
+        'r': r, 'c': c,
+        'elevation': round(float(elevations[r, c]), 3),
+        'biome': biome_names[int(biomes[r, c])],
+        'vegetation': round(float(vegetation[r, c]), 3),
+        'flags': int(tile_flags[r, c]),
+        'has_river': bool(tile_flags[r, c] & 1),
+        'volcanic': bool(tile_flags[r, c] & 2),
+        'populations': {},
+    }
+    species_names = ['Velothrix', 'Leviathan', 'Crawler', 'Crab', 'Worm']
+    for s in range(NUM_SPECIES):
+        pop = int(pops[r, c, s])
+        if pop > 0:
+            info['populations'][species_names[s]] = pop
+    return json.dumps(info)
 
 
 def get_save_state():

@@ -284,3 +284,20 @@ export function hasSave() {
 export function deleteSave() {
   localStorage.removeItem('evosim-save');
 }
+
+// ── Debug API ──
+
+export function debugSpawnRiver() {
+  if (!simReady) return;
+  return pyodide.runPython('debug_spawn_river()');
+}
+
+export function debugTriggerEvent(eventType) {
+  if (!simReady) return;
+  return pyodide.runPython(`debug_trigger_event('${eventType}')`);
+}
+
+export function debugGetTileInfo(r, c) {
+  if (!simReady) return '{}';
+  return pyodide.runPython(`debug_get_tile_info(${r}, ${c})`);
+}

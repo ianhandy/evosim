@@ -46,6 +46,10 @@
       </div>
     </div>
   </div>
+  <div class="setup-row">
+    <label>Debug</label>
+    <label class="toggle-label"><input type="checkbox" id="debug-toggle" checked> Debug Mode</label>
+  </div>
   <canvas id="preview-canvas"></canvas>
   <button class="btn-primary" id="btn-begin">Begin Observation</button>
   <button class="btn" id="btn-load-save" style="display:none;margin-top:8px;">Resume Saved Observation</button>
@@ -81,6 +85,17 @@
       </div>
       <canvas id="map-canvas"></canvas>
       <canvas id="overlay-canvas"></canvas>
+      <!-- Debug panel (floats over map) -->
+      <div id="debug-panel" class="debug-panel hidden">
+        <div class="debug-title">Debug</div>
+        <button class="btn btn-small debug-btn" id="debug-spawn-river">+ River</button>
+        <button class="btn btn-small debug-btn" id="debug-drought">Drought</button>
+        <button class="btn btn-small debug-btn" id="debug-disease">Disease</button>
+        <button class="btn btn-small debug-btn" id="debug-bloom">Bloom</button>
+        <button class="btn btn-small debug-btn" id="debug-surge">Surge</button>
+        <button class="btn btn-small debug-btn" id="debug-eruption">Eruption</button>
+        <div id="debug-tile-info" class="debug-tile-info"></div>
+      </div>
       <div id="overlay-controls" class="overlay-controls">
         <button class="overlay-btn active" data-overlay="none">Off</button>
         <button class="overlay-btn" data-overlay="diversity">Diversity</button>
