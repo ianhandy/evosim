@@ -475,11 +475,12 @@ def _generate_terrain(seed_str):
                 ch_dx = math.cos(ch_angle)
                 ch_dy = math.sin(ch_angle)
 
-                # Channel starts partway up the cone, extends past the base
-                ch_start = v_radius * rng.uniform(0.1, 0.25)
-                ch_end = v_radius * rng.uniform(1.0, 1.4)
-                ch_width = v_radius * rng.uniform(0.08, 0.18)
-                ch_depth = v_height * rng.uniform(0.25, 0.5)
+                # Channel starts near summit, extends well past the base
+                ch_start = v_radius * rng.uniform(0.05, 0.15)
+                ch_end = v_radius * rng.uniform(1.2, 1.8)
+                # Wide enough to be visible: at least 2-4 tiles at gs=128
+                ch_width = max(2.5, v_radius * rng.uniform(0.2, 0.4))
+                ch_depth = v_height * rng.uniform(0.35, 0.65)
 
                 # Distance along and perpendicular to channel axis
                 along = (rows_v - pr) * ch_dx + (cols_v - pc) * ch_dy

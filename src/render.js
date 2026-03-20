@@ -257,6 +257,11 @@ const FRAG_SRC = `
   void main() {
     int biome = int(v_biome + 0.5);
 
+    // ── Discard water tile side faces — they cause dark edges at coastlines ──
+    if (biome <= 1 && v_faceType > 0.5 && v_faceType < 2.5) {
+      discard;
+    }
+
     // ── Water surface (face type 3) ──
     if (v_faceType > 2.5) {
       if (biome > 1) discard;
