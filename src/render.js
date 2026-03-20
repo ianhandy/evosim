@@ -32,6 +32,7 @@ const VERT_SRC = `
   uniform sampler2D u_elevations;
   uniform sampler2D u_biomes;
   uniform sampler2D u_popTex;
+  uniform sampler2D u_vegetation;
   uniform float u_popMode;
 
   varying float v_shade;
@@ -41,6 +42,8 @@ const VERT_SRC = `
   varying float v_dither;
   varying vec4 v_popColor;
   varying float v_pillarT;
+  varying float v_veg;
+  varying float v_coastal;
 
   void main() {
     float gs = u_gridSize;
@@ -65,6 +68,10 @@ const VERT_SRC = `
 
     float WATER_LEVEL = 0.20;
 
+    // Sample vegetation
+    float veg = texture2D(u_vegetation, texCoord).r;
+    v_veg = veg;
+
     // Isometric projection using rotated position
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
@@ -73,14 +80,34 @@ const VERT_SRC = `
     float ix = (rCol - rRow) * tileW * 0.5;
     float iy = (rCol + rRow) * tileH * 0.5;
 
-    // Neighbor elevations for hillshade
+    // Neighbor elevations for hillshade + coastal detection
     float texel = 1.0 / gs;
     float eN = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
+    float eS = texture2D(u_elevations, texCoord + vec2(0.0,  texel)).r;
     float eW = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
+    float eE = texture2D(u_elevations, texCoord + vec2( texel, 0.0)).r;
+
+    // Coastal factor: how many neighbors are underwater
+    float waterNeighbors = 0.0;
+    if (eN < WATER_LEVEL) waterNeighbors += 1.0;
+    if (eS < WATER_LEVEL) waterNeighbors += 1.0;
+    if (eW < WATER_LEVEL) waterNeighbors += 1.0;
+    if (eE < WATER_LEVEL) waterNeighbors += 1.0;
+    v_coastal = waterNeighbors / 4.0; // 0=inland, 1=surrounded by water
+
+    // Height easing: smooth transition at waterline
+    // Beach tiles (0.20-0.28) ease up gradually with a quadratic curve
+    // so they don't jump abruptly from the flat water surface
+    float renderElev = elev;
+    float BEACH_ZONE = 0.08; // width of easing zone above sea level
+    if (elev > WATER_LEVEL && elev < WATER_LEVEL + BEACH_ZONE) {
+      float t = (elev - WATER_LEVEL) / BEACH_ZONE;
+      renderElev = WATER_LEVEL + t * t * BEACH_ZONE; // quadratic ease-in
+    }
 
     // Pillar from surface to global minimum
     float floorElev = max(0.0, u_minElev - 0.02);
-    float surfaceIz = elev * hScale;
+    float surfaceIz = renderElev * hScale;
     float floorIz = floorElev * hScale;
     float pillarH = max(0.0, surfaceIz - floorIz);
 
@@ -160,6 +187,8 @@ const FRAG_SRC = `
   varying float v_dither;
   varying vec4 v_popColor;
   varying float v_pillarT;
+  varying float v_veg;
+  varying float v_coastal;
 
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
@@ -170,13 +199,11 @@ const FRAG_SRC = `
 
     // ── Water surface (face type 3) ──
     if (v_faceType > 2.5) {
-      // Only render for water tiles
-      if (biome > 1) discard; // land tiles: discard the water face
+      if (biome > 1) discard;
 
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      // Animated caustic pattern
       float caustic = 0.5 + 0.5 * sin(v_dither * 40.0 + u_time * 2.0);
-      caustic = mix(1.0, caustic, 0.08 * (1.0 - depth)); // subtle, stronger in shallows
+      caustic = mix(1.0, caustic, 0.08 * (1.0 - depth));
 
       vec3 waterColor = vec3(
         (15.0 + (1.0 - depth) * 65.0) / 255.0,
@@ -184,44 +211,66 @@ const FRAG_SRC = `
         (130.0 + (1.0 - depth) * 70.0) / 255.0
       ) * caustic;
 
-      float alpha = 0.5 + depth * 0.4; // shallow=50%, deep=90%
+      float alpha = 0.5 + depth * 0.4;
       gl_FragColor = vec4(waterColor, alpha);
       return;
     }
 
-    // ── Terrain (faces 0, 1, 2) ──
+    // ── Dynamic terrain color ──
+    // Base: biome color from theme
     vec3 bc;
     if (biome == 0) bc = u_biomeColors[0];
     else if (biome == 1) bc = u_biomeColors[1];
     else if (biome == 2) bc = u_biomeColors[2];
     else if (biome == 3) bc = u_biomeColors[3];
     else bc = u_biomeColors[4];
+    vec3 color = bc / 255.0;
 
-    vec3 color = bc / 255.0 + vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
+    // ── Contextual color modifiers (land tiles only) ──
+    if (biome > 1) {
+      // Coastal influence: tiles near water get sandy/lighter
+      vec3 sandTint = u_biomeColors[2] / 255.0; // tidal flats color = sand
+      color = mix(color, sandTint, v_coastal * 0.4);
 
-    // Dither on land top faces
-    if (biome > 1 && v_faceType < 0.5) {
-      color += (v_dither - 0.5) * 0.08;
+      // Vegetation influence: lush = greener, barren = browner/rockier
+      vec3 lushTint = vec3(0.12, 0.22, 0.08);    // deep green
+      vec3 barrenTint = vec3(0.18, 0.13, 0.08);   // dry brown
+      if (v_veg > 0.6) {
+        color = mix(color, lushTint, (v_veg - 0.6) * 0.5);
+      } else if (v_veg < 0.3) {
+        color = mix(color, barrenTint, (0.3 - v_veg) * 0.4);
+      }
+
+      // Elevation brightening for high terrain
+      color += vec3(v_elev * 0.08, v_elev * 0.05, v_elev * 0.03);
+    } else {
+      // Underwater: elevation-based depth coloring
+      color += vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
+    }
+
+    // Per-tile dither
+    if (v_faceType < 0.5) {
+      color += (v_dither - 0.5) * 0.06;
     }
 
     // Face shading
     float shade = v_shade;
 
-    // Side face gradient: darker toward the base of the pillar
+    // Side face gradient
     if (v_faceType > 0.5 && v_faceType < 2.5) {
-      shade *= (1.0 - v_pillarT * 0.5); // 100% at top → 50% at bottom
+      shade *= (1.0 - v_pillarT * 0.5);
     }
 
     color *= shade;
 
-    // Underwater seafloor tint — darken terrain under water
+    // Underwater seafloor tint
     if (biome <= 1 && v_faceType < 0.5) {
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      color *= (0.4 + 0.6 * (1.0 - depth)); // dim seafloor in deep water
-      color += vec3(0.0, 0.02, 0.06) * depth; // blue tint at depth
+      color *= (0.4 + 0.6 * (1.0 - depth));
+      color += vec3(0.0, 0.02, 0.06) * depth;
     }
 
-    // Population overlay on top faces
+    // Population overlay
     if (u_popMode > 0.5 && v_faceType < 0.5 && v_popColor.a > 0.01) {
       color = mix(color, v_popColor.rgb, v_popColor.a * 0.6);
     }
@@ -354,6 +403,7 @@ export class MapRenderer {
       u_biomes: gl.getUniformLocation(this.program, 'u_biomes'),
       u_biomeColors: gl.getUniformLocation(this.program, 'u_biomeColors'),
       u_popTex: gl.getUniformLocation(this.program, 'u_popTex'),
+      u_vegetation: gl.getUniformLocation(this.program, 'u_vegetation'),
       u_popMode: gl.getUniformLocation(this.program, 'u_popMode'),
     };
 
@@ -389,6 +439,7 @@ export class MapRenderer {
     this.elevTexture = gl.createTexture();
     this.biomeTexture = gl.createTexture();
     this.popTexture = gl.createTexture();
+    this.vegTexture = gl.createTexture();
   }
 
   setup(gridSize) {
@@ -442,7 +493,7 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  updateData(elevations, biomeData, populations, speciesColors) {
+  updateData(elevations, biomeData, vegetationData, populations, speciesColors) {
     if (this.fallback) return;
     const gl = this.gl;
     const gs = this.gridSize;
@@ -474,6 +525,21 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Vegetation texture
+    if (vegetationData) {
+      const vegU8 = new Uint8Array(gs * gs);
+      for (let i = 0; i < gs * gs; i++) {
+        vegU8[i] = Math.min(255, Math.max(0, Math.round(vegetationData[i] * 255)));
+      }
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, this.vegTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, vegU8);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
 
     // Population overlay texture
     if (populations && speciesColors) {
@@ -577,10 +643,13 @@ export class MapRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.biomeTexture);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.popTexture);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.vegTexture);
 
     gl.uniform1i(this.locs.u_elevations, 0);
     gl.uniform1i(this.locs.u_biomes, 1);
     gl.uniform1i(this.locs.u_popTex, 2);
+    gl.uniform1i(this.locs.u_vegetation, 3);
 
     const colorFlat = new Float32Array(15);
     for (let i = 0; i < 5; i++) {

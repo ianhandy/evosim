@@ -585,7 +585,7 @@ function startRenderLoop() {
         parseInt(hex.slice(3,5), 16),
         parseInt(hex.slice(5,7), 16)
       ]);
-      mapRenderer.updateData(views.elevations, views.biomes, views.populations, specRGB);
+      mapRenderer.updateData(views.elevations, views.biomes, views.vegetation, views.populations, specRGB);
       mapRenderer.updateRivers(views.riverPaths, views.riverMeta);
       mapRenderer.render(
         { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotSteps: camRotation },
