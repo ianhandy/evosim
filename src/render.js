@@ -73,40 +73,16 @@ const VERT_SRC = `
     float ix = (rCol - rRow) * tileW * 0.5;
     float iy = (rCol + rRow) * tileH * 0.5;
 
-    // ── Per-corner elevation for smooth slopes ──
-    // Blend center with direct neighbors only (not diagonals) — gentler slopes
+    // Neighbor elevations for hillshade
     float texel = 1.0 / gs;
     float eN = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
-    float eS = texture2D(u_elevations, texCoord + vec2(0.0,  texel)).r;
     float eW = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
-    float eE = texture2D(u_elevations, texCoord + vec2( texel, 0.0)).r;
-
-    // Corner = 50% center + 50% average of 2 adjacent neighbors
-    // Clamped so corners never deviate more than 0.08 from center
-    float maxDev = 0.08;
-    float eTop    = clamp((eN + eW) * 0.5, elev - maxDev, elev + maxDev);
-    float eRight  = clamp((eN + eE) * 0.5, elev - maxDev, elev + maxDev);
-    float eBottom = clamp((eS + eE) * 0.5, elev - maxDev, elev + maxDev);
-    float eLeft   = clamp((eS + eW) * 0.5, elev - maxDev, elev + maxDev);
-
-    // Blend: 60% center elevation + 40% corner for gentle slopes
-    eTop    = mix(elev, eTop,    0.4);
-    eRight  = mix(elev, eRight,  0.4);
-    eBottom = mix(elev, eBottom, 0.4);
-    eLeft   = mix(elev, eLeft,   0.4);
-
-    // Per-vertex elevation via bilinear interpolation
-    float cornerElev = mix(
-      mix(eTop, eRight, a_quad.x),
-      mix(eLeft, eBottom, a_quad.x),
-      a_quad.y
-    );
 
     // Pillar from surface to global minimum
     float floorElev = max(0.0, u_minElev - 0.02);
     float surfaceIz = elev * hScale;
-    float cornerIz = cornerElev * hScale;
     float floorIz = floorElev * hScale;
+    float pillarH = max(0.0, surfaceIz - floorIz);
 
     float waterIz = WATER_LEVEL * hScale;
 
@@ -114,26 +90,22 @@ const VERT_SRC = `
     v_pillarT = 0.0;
 
     if (a_faceType < 0.5) {
-      // Face 0: terrain top — gently sloped
+      // Face 0: flat terrain top diamond
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - cornerIz + localY * tileH * 0.5;
+      pos.y = iy - surfaceIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
-      // Face 1: right side pillar (top edge: right→bottom corners)
-      float topElev = mix(eRight, eBottom, a_quad.y);
-      float topIz = topElev * hScale;
+      // Face 1: right side pillar
+      float topY = iy - surfaceIz;
       pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
-      float topY = iy - topIz + a_quad.y * tileH * 0.5;
-      pos.y = topY + a_quad.x * max(0.0, topIz - floorIz);
+      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
       v_pillarT = a_quad.x;
     } else if (a_faceType < 2.5) {
-      // Face 2: left side pillar (top edge: bottom→left corners)
-      float topElev = mix(eBottom, eLeft, a_quad.y);
-      float topIz = topElev * hScale;
+      // Face 2: left side pillar
+      float topY = iy - surfaceIz;
       pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
-      float topY = iy - topIz + a_quad.y * tileH * 0.5;
-      pos.y = topY + a_quad.x * max(0.0, topIz - floorIz);
+      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
       v_pillarT = a_quad.x;
     } else {
       // Face 3: water surface
@@ -143,6 +115,19 @@ const VERT_SRC = `
       pos.x = ix + localX * tileW * 0.5;
       pos.y = iy - waterIz - wave + localY * tileH * 0.5;
     }
+
+    // ── BACKUP: Sloped tiles (uncomment to enable) ──
+    // To re-enable smooth slopes, replace the flat top face block above with:
+    //   float eS = texture2D(u_elevations, texCoord + vec2(0.0, texel)).r;
+    //   float eE = texture2D(u_elevations, texCoord + vec2(texel, 0.0)).r;
+    //   float maxDev = 0.08;
+    //   float eTop = mix(elev, clamp((eN+eW)*0.5, elev-maxDev, elev+maxDev), 0.4);
+    //   float eRight = mix(elev, clamp((eN+eE)*0.5, elev-maxDev, elev+maxDev), 0.4);
+    //   float eBottom = mix(elev, clamp((eS+eE)*0.5, elev-maxDev, elev+maxDev), 0.4);
+    //   float eLeft = mix(elev, clamp((eS+eW)*0.5, elev-maxDev, elev+maxDev), 0.4);
+    //   float cornerElev = mix(mix(eTop,eRight,a_quad.x), mix(eLeft,eBottom,a_quad.x), a_quad.y);
+    //   pos.y = iy - cornerElev*hScale + localY*tileH*0.5;  (in face 0)
+    //   And use per-corner elevations for side face top edges.
 
     // Pan
     pos.x += u_pan.x / u_resolution.x * 2.0;
