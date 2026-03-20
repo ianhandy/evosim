@@ -51,14 +51,18 @@ const VERT_SRC = `
 
     v_popColor = u_popMode > 0.5 ? texture2D(u_popTex, texCoord) : vec4(0.0);
 
-    // Standard isometric projection (no rotation here)
+    // Water tiles render at flat sea level (0.20 in elevation space)
+    float WATER_LEVEL = 0.20;
+    float renderElev = elev < WATER_LEVEL ? WATER_LEVEL : elev;
+
+    // Standard isometric projection
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
     float ix = (col - row) * tileW * 0.5;
     float iy = (col + row) * tileH * 0.5;
-    float iz = elev * hScale;
+    float iz = renderElev * hScale;
 
     // Deep baseline for pillars
     float deepBase = gs * tileH * 0.5 + hScale * 0.5;
