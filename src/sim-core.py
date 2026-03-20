@@ -571,6 +571,10 @@ def _assign_biomes():
 
                 queue.append((nr, nc))
 
+    # Volcanic summit tiles → rocky shore (overrides forest/beach)
+    volcanic = (tile_flags & 2) > 0
+    base[volcanic & is_land] = BIOME_ROCKY_SHORE
+
     biomes[:] = base
 
 
