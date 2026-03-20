@@ -133,9 +133,15 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Ocean floor baseline: slightly noisy, all negative ──
-    # Shallow baseline so eruptions easily create land
-    grid = rng.uniform(-0.20, -0.10, (gs, gs)).astype(np.float32)
+    # ── Ocean floor baseline: varied noise, all negative ──
+    grid = rng.uniform(-0.25, -0.08, (gs, gs)).astype(np.float32)
+    # Add low-frequency undulation to the ocean floor
+    floor_noise = rng.rand(gs, gs).astype(np.float32)
+    floor_noise = gaussian_filter(floor_noise, sigma=gs * 0.12, mode='wrap')
+    fn_lo, fn_hi = floor_noise.min(), floor_noise.max()
+    if fn_hi > fn_lo:
+        floor_noise = (floor_noise - fn_lo) / (fn_hi - fn_lo)
+    grid += (floor_noise - 0.5) * 0.08  # +/- 0.04 undulation
 
     # ── Plate drift direction (single plate, random direction) ──
     drift_angle = rng.uniform(0, 2 * math.pi)
@@ -219,13 +225,38 @@ def _generate_terrain(seed_str):
     if 'snapshot' in dir():
         grid = snapshot
 
+    # ── Detail noise pass — break up the smooth volcanic slopes ──
+    # FBM noise adds natural terrain roughness: ridges, gullies, uneven surfaces
+    detail = rng.rand(gs, gs).astype(np.float32)
+    detail = gaussian_filter(detail, sigma=gs * 0.02, mode='wrap')  # fine detail
+    detail_lo, detail_hi = detail.min(), detail.max()
+    if detail_hi > detail_lo:
+        detail = (detail - detail_lo) / (detail_hi - detail_lo)
+
+    # Medium-scale noise for hills and valleys
+    medium = rng.rand(gs, gs).astype(np.float32)
+    medium = gaussian_filter(medium, sigma=gs * 0.06, mode='wrap')
+    med_lo, med_hi = medium.min(), medium.max()
+    if med_hi > med_lo:
+        medium = (medium - med_lo) / (med_hi - med_lo)
+
+    # Blend noise into the terrain — more effect on land, less on deep ocean
+    for r in range(gs):
+        for c in range(gs):
+            if grid[r, c] > -0.05:
+                # Land and shallow water: add roughness
+                grid[r, c] += (detail[r, c] - 0.5) * 0.06
+                grid[r, c] += (medium[r, c] - 0.5) * 0.04
+            else:
+                # Deep ocean: subtle seafloor variation
+                grid[r, c] += (detail[r, c] - 0.5) * 0.02
+
     # ── Map to elevation array ──
-    # Normalize to 0–1, then set sea level so that 10-30% is water
     lo, hi = grid.min(), grid.max()
     if hi <= lo:
         hi = lo + 1
 
-    # Normalize to 0-1 first
+    # Normalize to 0-1
     for r in range(gs):
         for c in range(gs):
             elevations[r, c] = (grid[r, c] - lo) / (hi - lo)
