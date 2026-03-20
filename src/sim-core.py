@@ -140,12 +140,15 @@ def _generate_terrain(seed_str):
     np.random.seed(seed_val % (2**31))
     rng = np.random.RandomState(seed_val)
 
+    global designated_volcanoes
+    designated_volcanoes = []
+
     gs = GRID_SIZE
     # Work on an oversized canvas so land can grow freely in any direction
     igs = gs * 2  # internal generation size
 
     # ── Ocean floor baseline: very shallow, most will become land ──
-    grid = rng.uniform(-0.06, -0.01, (igs, igs)).astype(np.float32)
+    grid = rng.uniform(-0.04, -0.005, (igs, igs)).astype(np.float32)
     floor_noise = rng.rand(igs, igs).astype(np.float32)
     floor_noise = gaussian_filter(floor_noise, sigma=igs * 0.12, mode='wrap')
     fn_lo, fn_hi = floor_noise.min(), floor_noise.max()
@@ -159,51 +162,127 @@ def _generate_terrain(seed_str):
     drift_dy = math.sin(drift_angle)
     drift_speed = rng.uniform(0.3, 0.6)
 
-    # ── Tectonic fault lines — hotspots cluster along 1-3 plate boundaries ──
-    num_faults = rng.randint(1, 4)
-    faults = []
-    for _ in range(num_faults):
-        fx = rng.uniform(igs * 0.2, igs * 0.8)
-        fy = rng.uniform(igs * 0.2, igs * 0.8)
-        fangle = rng.uniform(0, math.pi)
-        faults.append((fx, fy, math.cos(fangle), math.sin(fangle)))
+    # ── Rift zones: "Mercedes Star" pattern ──
+    # Central volcanic point in the middle third of the canvas.
+    # 2-4 rift zones radiate outward like cracks in glass.
+    # Based on real volcanic island geology (Hawaii, Tenerife, La Palma).
+    center_r = rng.uniform(igs * 0.35, igs * 0.65)
+    center_c = rng.uniform(igs * 0.35, igs * 0.65)
 
-    # ── Hotspots: clustered near fault lines ──
-    num_hotspots = max(6, igs // 5)
+    num_rifts = rng.randint(2, 5)  # 2-4 rift zones
+    ideal_spacing = 2 * math.pi / num_rifts
+    base_angle = rng.uniform(0, 2 * math.pi)
+
+    # Generate rift angles with perturbation, enforce >30° (0.52 rad) minimum
+    rift_angles = []
+    for i in range(num_rifts):
+        angle = base_angle + i * ideal_spacing + rng.uniform(-0.26, 0.26)  # ±15°
+        rift_angles.append(angle % (2 * math.pi))
+    # Verify minimum separation
+    for i in range(len(rift_angles)):
+        for j in range(i + 1, len(rift_angles)):
+            diff = abs(rift_angles[i] - rift_angles[j])
+            diff = min(diff, 2 * math.pi - diff)
+            if diff < 0.52:
+                rift_angles[j] = (rift_angles[j] + 0.52) % (2 * math.pi)
+
+    # Build curved rift lines as series of points from center to edge
+    rift_length = igs * rng.uniform(0.35, 0.50)
+    faults = []  # store (center_r, center_c, dx, dy) for compatibility
+    rift_points = []  # detailed point lists per rift
+
+    for ri, angle in enumerate(rift_angles):
+        dx = math.cos(angle)
+        dy = math.sin(angle)
+        faults.append((center_r, center_c, dx, dy))
+
+        # Curved rift: sine-based perpendicular offset
+        # Gentle curve — max deviation ~8% of length
+        curve_freq = rng.uniform(1.5, 3.0)
+        curve_amp = rift_length * rng.uniform(0.04, 0.08)
+        curve_phase = rng.uniform(0, 2 * math.pi)
+
+        points = []
+        num_steps = 40
+        for si in range(num_steps + 1):
+            t = si / num_steps
+            dist = t * rift_length
+            # Perpendicular curve offset
+            offset = math.sin(t * curve_freq * math.pi + curve_phase) * curve_amp * t
+            pr = center_r + dist * dx + offset * (-dy)
+            pc = center_c + dist * dy + offset * dx
+            points.append((pr, pc))
+        rift_points.append(points)
+
+    # ── Hotspots along rift zones ──
+    # Density decays exponentially from center. Tallest peaks near center.
     hotspots = []
-    for i in range(num_hotspots):
-        if rng.random() < 0.8 and faults:
-            fault = faults[rng.randint(0, len(faults))]
-            fx, fy, fdx, fdy = fault
-            t = rng.uniform(-igs * 0.4, igs * 0.4)
-            perp = rng.uniform(-igs * 0.06, igs * 0.06)
-            hx = fx + fdx * t + fdy * perp
-            hy = fy + fdy * t - fdx * perp
-        else:
-            hx = rng.uniform(igs * 0.1, igs * 0.9)
-            hy = rng.uniform(igs * 0.1, igs * 0.9)
+    hotspots_per_rift = max(3, igs // 30)  # 3-8 per rift
 
-        hx = max(1, min(igs - 2, hx))
-        hy = max(1, min(igs - 2, hy))
-        power = rng.uniform(0.10, 0.22)
-        radius = rng.uniform(igs * 0.06, igs * 0.18)
-        hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
+    # Central summit hotspot (biggest — drives the core island mass)
+    hotspots.append({
+        'x': center_r, 'y': center_c,
+        'power': rng.uniform(0.25, 0.38),
+        'radius': rng.uniform(igs * 0.12, igs * 0.22),
+    })
 
-    # ── Fault ridge uplift ──
+    for ri, points in enumerate(rift_points):
+        n_hs = rng.randint(hotspots_per_rift, hotspots_per_rift + 3)
+        for _ in range(n_hs):
+            # Biased toward center: t = random()^2 clusters near 0
+            t = rng.random() ** 2
+            t = max(0.08, min(0.95, t))  # not right at center or tip
+
+            # Interpolate along the curved rift
+            idx_f = t * (len(points) - 1)
+            idx_i = int(idx_f)
+            idx_frac = idx_f - idx_i
+            if idx_i >= len(points) - 1:
+                pr, pc = points[-1]
+            else:
+                pr = points[idx_i][0] * (1 - idx_frac) + points[idx_i + 1][0] * idx_frac
+                pc = points[idx_i][1] * (1 - idx_frac) + points[idx_i + 1][1] * idx_frac
+
+            # Perpendicular jitter
+            angle = rift_angles[ri]
+            jitter = rng.uniform(-igs * 0.03, igs * 0.03)
+            pr += jitter * (-math.sin(angle))
+            pc += jitter * math.cos(angle)
+
+            pr = max(1, min(igs - 2, pr))
+            pc = max(1, min(igs - 2, pc))
+
+            # Power and radius decay with distance from center
+            dist_factor = 1.0 - t * 0.6  # 100% at center → 40% at tip
+            power = rng.uniform(0.12, 0.26) * dist_factor
+            radius = rng.uniform(igs * 0.06, igs * 0.18) * dist_factor
+
+            hotspots.append({'x': pr, 'y': pc, 'power': power, 'radius': radius})
+
+    # ── Rift ridge elevation ──
+    # Each rift zone creates an elevated ridge with Gaussian cross-section
+    # that decays quadratically toward the tips.
     rows_grid, cols_grid = np.meshgrid(np.arange(igs), np.arange(igs), indexing='ij')
-    for fault in faults:
-        fx, fy, fdx, fdy = fault
-        ridge_width = igs * rng.uniform(0.03, 0.07)
-        ridge_power = rng.uniform(0.03, 0.08)
-        dx = rows_grid - fx
-        dy = cols_grid - fy
-        perp = np.abs(dx * fdy - dy * fdx)
-        mask = perp < ridge_width
-        t = 1 - perp / ridge_width
-        grid[mask] += ridge_power * (t[mask] ** 2)
+    for ri, points in enumerate(rift_points):
+        ridge_width = igs * rng.uniform(0.05, 0.10)
+        ridge_power = rng.uniform(0.06, 0.14)
+
+        # For each grid cell, find distance to nearest rift point
+        # (simplified: sample every 4th point for performance)
+        for si in range(0, len(points), 2):
+            pr, pc = points[si]
+            t = si / len(points)  # 0=center, 1=tip
+            decay = (1 - t) ** 2  # quadratic decay toward tip
+
+            dr = rows_grid - pr
+            dc = cols_grid - pc
+            dist = np.sqrt(dr * dr + dc * dc)
+            # Gaussian cross-section
+            contrib = ridge_power * decay * np.exp(-(dist * dist) / (2 * ridge_width * ridge_width))
+            grid += contrib.astype(np.float32) * 0.8
 
     # ── Simulate geological epochs ──
-    num_epochs = rng.randint(80, 200)
+    num_epochs = rng.randint(120, 250)
     snapshot_epoch = rng.randint(int(num_epochs * 0.6), num_epochs)
 
     # Pre-build distance grids for each hotspot
