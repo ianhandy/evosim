@@ -128,10 +128,13 @@ const VERT_SRC = `
 
     if (a_faceType < 0.5) {
       // Face 0: flat terrain top diamond
+      // Water tiles: render seafloor at water level (hidden under face 3)
+      // so no gray squares show through at coastlines
+      float topIz = isWater ? waterIz : surfaceIz;
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - surfaceIz + localY * tileH * 0.5;
+      pos.y = iy - topIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
       // Face 1: right side pillar
       if (isWater && !waterNeedsSides) {
@@ -281,80 +284,77 @@ const FRAG_SRC = `
       return;
     }
 
-    // ── Dynamic terrain color ──
-    // Base: biome color from theme
-    vec3 bc;
-    if (biome == 0) bc = u_biomeColors[0];
-    else if (biome == 1) bc = u_biomeColors[1];
-    else if (biome == 2) bc = u_biomeColors[2];
-    else if (biome == 3) bc = u_biomeColors[3];
-    else bc = u_biomeColors[4];
-    vec3 color = bc / 255.0;
+    // ── Terrain color ──
+    // Smooth spatial noise for gradual color variation across contiguous areas.
+    // Uses elevation at coarse scale as a natural coherent noise source.
+    // v_dither is per-tile hash, v_elev and v_veg provide spatial coherence.
 
-    // ── Contextual color modifiers (land tiles only) ──
-    if (biome > 1) {
-      // Coastal influence: tiles near water get sandy/lighter
-      vec3 sandTint = u_biomeColors[2] / 255.0; // tidal flats color = sand
-      color = mix(color, sandTint, v_coastal * 0.4);
+    // Smooth spatial variation: slow-changing noise from grid position
+    // (elevation already varies smoothly across the terrain)
+    float spatialVar = fract(sin(v_elev * 127.1 + v_veg * 311.7) * 43758.5);
+    // Blend with neighbor info for extra smoothness
+    float smoothVar = spatialVar * 0.6 + v_veg * 0.4;
 
-      // Vegetation influence: lush = greener, barren = browner/rockier
-      vec3 lushTint = vec3(0.12, 0.22, 0.08);    // deep green
-      vec3 barrenTint = vec3(0.18, 0.13, 0.08);   // dry brown
-      if (v_veg > 0.6) {
-        color = mix(color, lushTint, (v_veg - 0.6) * 0.5);
-      } else if (v_veg < 0.3) {
-        color = mix(color, barrenTint, (0.3 - v_veg) * 0.4);
-      }
+    vec3 color;
 
-      // Elevation brightening for high terrain
-      color += vec3(v_elev * 0.08, v_elev * 0.05, v_elev * 0.03);
+    if (biome == 2) {
+      // ── Forest: deep green with smooth variation ──
+      vec3 deepForest = vec3(0.06, 0.16, 0.04);     // darkest forest
+      vec3 midForest = vec3(0.10, 0.22, 0.06);       // mid green
+      vec3 lightForest = vec3(0.14, 0.28, 0.09);     // lighter canopy
+      // Smooth blend based on vegetation + spatial variation
+      float forestT = clamp(v_veg * 0.7 + smoothVar * 0.3, 0.0, 1.0);
+      color = mix(deepForest, mix(midForest, lightForest, forestT), forestT);
+      // Slight elevation influence — higher forest is a touch lighter
+      color += vec3(0.01, 0.02, 0.005) * v_elev;
+
+    } else if (biome == 3) {
+      // ── Beach: warm sand tones ──
+      vec3 wetSand = vec3(0.55, 0.45, 0.30);
+      vec3 drySand = vec3(0.70, 0.60, 0.42);
+      float sandT = clamp(smoothVar + (1.0 - v_coastal) * 0.3, 0.0, 1.0);
+      color = mix(wetSand, drySand, sandT) / 3.0; // scale down to match other biomes
+
+    } else if (biome == 4) {
+      // ── Rocky: gray/slate with subtle warm undertones ──
+      vec3 darkSlate = vec3(0.12, 0.12, 0.13);
+      vec3 midGray = vec3(0.20, 0.19, 0.18);
+      vec3 lightSlate = vec3(0.28, 0.26, 0.24);
+      float rockT = clamp(smoothVar * 0.6 + v_elev * 0.4, 0.0, 1.0);
+      color = mix(darkSlate, mix(midGray, lightSlate, rockT), rockT);
+
     } else {
-      // Underwater: elevation-based depth coloring
-      color += vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
+      // Underwater biomes — use theme colors
+      vec3 bc;
+      if (biome == 0) bc = u_biomeColors[0];
+      else bc = u_biomeColors[1];
+      color = bc / 255.0 + vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
     }
 
     // ── Within-tile texture (top faces only) ──
     if (v_faceType < 0.5) {
-      // Multi-frequency noise from quad position + tile hash
       float n1 = fract(sin(v_quadPos.x * 43.1 + v_quadPos.y * 17.3 + v_dither * 91.7) * 43758.5);
       float n2 = fract(sin(v_quadPos.x * 127.3 + v_quadPos.y * 311.1 + v_dither * 53.2) * 28461.9);
       float n3 = fract(sin((v_quadPos.x + v_quadPos.y) * 73.7 + v_dither * 197.3) * 15731.3);
 
-      // Base brightness variation
-      color += (n1 - 0.5) * 0.04;
+      // Subtle within-tile variation (small — should not look patchy)
+      color += (n1 - 0.5) * 0.02;
 
       if (biome == 2) {
-        // Forest tiles: grass spots that increase with forest density
-        // More contiguous forest = denser, greener grass
-        float grassNoise = n2 * n3; // clustered spots
-        float grassStrength = v_forestDensity * v_veg; // denser forest + more veg = more grass
-        vec3 grassColor = vec3(0.08, 0.18, 0.04); // dark grass green
-        vec3 lightGrass = vec3(0.15, 0.28, 0.08); // lighter grass patches
-        // Sparse grass spots at low density, thick coverage at high density
-        float grassThreshold = 0.8 - grassStrength * 0.6; // 0.8 at edges → 0.2 deep forest
-        if (grassNoise > grassThreshold) {
-          float t = (grassNoise - grassThreshold) / (1.0 - grassThreshold);
-          vec3 gColor = mix(grassColor, lightGrass, n1);
-          color = mix(color, gColor, t * 0.5 * grassStrength);
-        }
+        // Forest: subtle canopy texture — darker and lighter spots
+        float canopy = n2 * 0.5 + n3 * 0.5;
+        color += (canopy - 0.5) * 0.03 * v_forestDensity;
       } else if (biome == 3) {
-        // Beach tiles: sandy grain texture
-        float grain = n1 * 0.7 + n2 * 0.3;
-        color += (grain - 0.5) * 0.04;
-        // Occasional darker wet sand patches near water
-        if (v_coastal > 0.3 && n3 > 0.7) {
-          color *= 0.92; // darker wet spot
+        // Beach: fine sand grain
+        color += (n1 * 0.6 + n2 * 0.4 - 0.5) * 0.02;
+        if (v_coastal > 0.3 && n3 > 0.75) {
+          color *= 0.94; // subtle wet patches
         }
       } else if (biome == 4) {
-        // Rocky/volcanic tiles: craggy dark rock
-        vec3 darkRock = vec3(0.08, 0.06, 0.05);
-        vec3 lightRock = vec3(0.15, 0.12, 0.09);
-        float rockPattern = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
-        color = mix(darkRock, lightRock, rockPattern);
-        // Cracks
+        // Rock: subtle crack lines
         float crack = abs(n1 - n2);
-        if (crack < 0.08) {
-          color *= 0.55;
+        if (crack < 0.06) {
+          color *= 0.7;
         }
       }
     }
