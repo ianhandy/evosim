@@ -26,7 +26,7 @@ const mapCanvas = $('map-canvas');
 const popChart = $('pop-chart');
 const pentagonChart = $('pentagon-chart');
 
-let gridSize = 32;
+let gridSize = 128;
 let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
