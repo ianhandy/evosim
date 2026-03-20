@@ -1210,7 +1210,7 @@ popChart.addEventListener('mousemove', e => {
 popChart.addEventListener('mouseleave', () => {
   popChartTooltip = null;
   popChart.style.cursor = '';
-}
+});
 
 // ── Species cards ──
 const speciesCards = $('species-cards');
