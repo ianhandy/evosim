@@ -1,14 +1,14 @@
 /**
  * WebGL isometric terrain renderer.
  *
- * Renders the terrain as instanced quads (top face + 2 side faces per tile)
- * with per-tile attributes from the SharedArrayBuffer.
+ * Renders terrain as instanced quads with seafloor/water layering:
+ * - Face 0: terrain top (land or seafloor)
+ * - Face 1: right pillar (extends to global min elevation)
+ * - Face 2: left pillar
+ * - Face 3: water surface (translucent diamond at sea level, water tiles only)
  *
- * Features:
- * - Terrain tiles with biome colors, elevation shading, dithering
- * - River overlay (line segments projected into iso space)
- * - Population heatmap overlay (per-tile RGBA texture)
- * - Camera: pan, zoom, tilt, rotation (45° snaps)
+ * Features: depth gradient water, directional hillshade, dithering,
+ * animated water, population overlay, rotation, rivers.
  */
 
 // ── Terrain shaders ──
@@ -17,7 +17,7 @@ const VERT_SRC = `
   precision mediump float;
   attribute vec2 a_quad;
   attribute float a_tileIdx;
-  attribute float a_faceType;     // 0=top, 1=right side, 2=left side
+  attribute float a_faceType;     // 0=terrain top, 1=right side, 2=left side, 3=water surface
 
   uniform float u_gridSize;
   uniform vec2 u_resolution;
@@ -26,11 +26,13 @@ const VERT_SRC = `
   uniform vec2 u_pan;
   uniform float u_heightScale;
   uniform float u_rotation;
+  uniform float u_minElev;        // global minimum elevation for pillar base
+  uniform float u_time;           // for water animation
 
   uniform sampler2D u_elevations;
   uniform sampler2D u_biomes;
-  uniform sampler2D u_popTex;     // population overlay (RGBA)
-  uniform float u_popMode;        // 0=off, 1=on
+  uniform sampler2D u_popTex;
+  uniform float u_popMode;
 
   varying float v_shade;
   varying float v_biome;
@@ -38,6 +40,7 @@ const VERT_SRC = `
   varying float v_faceType;
   varying float v_dither;
   varying vec4 v_popColor;
+  varying float v_pillarT;        // 0=top of pillar, 1=bottom — for gradient
 
   void main() {
     float gs = u_gridSize;
@@ -51,63 +54,80 @@ const VERT_SRC = `
 
     v_popColor = u_popMode > 0.5 ? texture2D(u_popTex, texCoord) : vec4(0.0);
 
-    // Water tiles render at flat sea level (0.20 in elevation space)
     float WATER_LEVEL = 0.20;
-    float renderElev = elev < WATER_LEVEL ? WATER_LEVEL : elev;
+    bool isWater = elev < WATER_LEVEL;
 
-    // Standard isometric projection
+    // Isometric projection
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
     float ix = (col - row) * tileW * 0.5;
     float iy = (col + row) * tileH * 0.5;
-    float iz = renderElev * hScale;
 
-    // Deep baseline for pillars
-    float deepBase = gs * tileH * 0.5 + hScale * 0.5;
-    float pillarH = max(0.0, deepBase - (iy - iz + tileH * 0.5));
+    // Pillar extends from tile surface down to the global minimum
+    float floorElev = max(0.0, u_minElev - 0.02); // slightly below deepest
+    float surfaceIz = elev * hScale;
+    float floorIz = floorElev * hScale;
+    float pillarH = max(0.0, (surfaceIz - floorIz));
+
+    // Water surface sits at sea level
+    float waterIz = WATER_LEVEL * hScale;
 
     vec2 pos;
+    v_pillarT = 0.0;
+
     if (a_faceType < 0.5) {
-      // Top face diamond
+      // Face 0: terrain top diamond (at actual elevation — shows seafloor)
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - iz + localY * tileH * 0.5;
+      pos.y = iy - surfaceIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
-      // Right side face
-      float topY = iy - iz;
+      // Face 1: right side pillar
+      float topY = iy - surfaceIz;
       pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
       pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
-    } else {
-      // Left side face
-      float topY = iy - iz;
+      v_pillarT = a_quad.x;
+    } else if (a_faceType < 2.5) {
+      // Face 2: left side pillar
+      float topY = iy - surfaceIz;
       pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
       pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
+      v_pillarT = a_quad.x;
+    } else {
+      // Face 3: water surface diamond (only meaningful for water tiles)
+      // Subtle wave offset per tile
+      float wave = sin(u_time * 1.5 + row * 0.7 + col * 1.1) * 0.003 * hScale;
+      float localX = (a_quad.x - a_quad.y);
+      float localY = (a_quad.x + a_quad.y - 1.0);
+      pos.x = ix + localX * tileW * 0.5;
+      pos.y = iy - waterIz - wave + localY * tileH * 0.5;
     }
 
-    // Apply rotation as screen-space transform around origin
+    // Screen-space rotation
     float cosR = cos(u_rotation);
     float sinR = sin(u_rotation);
     vec2 rotated = vec2(
       pos.x * cosR - pos.y * sinR,
       pos.x * sinR + pos.y * cosR
     );
-
-    // Apply pan
     rotated.x += u_pan.x / u_resolution.x * 2.0;
     rotated.y += u_pan.y / u_resolution.y * 2.0;
 
-    // Directional hillshade for top faces (sample neighbor elevations)
+    // Shading
     if (a_faceType < 0.5) {
+      // Hillshade from neighbor elevations
       float texel = 1.0 / gs;
       float hL = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
       float hU = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
       v_shade = 0.5 + 0.5 * clamp(0.5 + (elev - hL) * 2.5 + (elev - hU) * 2.0, 0.0, 1.0);
-    } else {
+    } else if (a_faceType < 2.5) {
       v_shade = a_faceType < 1.5 ? 0.45 : 0.3;
+    } else {
+      v_shade = 1.0; // water surface — shaded in fragment
     }
+
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
@@ -125,12 +145,37 @@ const FRAG_SRC = `
   varying float v_faceType;
   varying float v_dither;
   varying vec4 v_popColor;
+  varying float v_pillarT;
 
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
+  uniform float u_time;
 
   void main() {
     int biome = int(v_biome + 0.5);
+
+    // ── Water surface (face type 3) ──
+    if (v_faceType > 2.5) {
+      // Only render for water tiles
+      if (biome > 1) discard; // land tiles: discard the water face
+
+      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
+      // Animated caustic pattern
+      float caustic = 0.5 + 0.5 * sin(v_dither * 40.0 + u_time * 2.0);
+      caustic = mix(1.0, caustic, 0.08 * (1.0 - depth)); // subtle, stronger in shallows
+
+      vec3 waterColor = vec3(
+        (15.0 + (1.0 - depth) * 65.0) / 255.0,
+        (70.0 + (1.0 - depth) * 90.0) / 255.0,
+        (130.0 + (1.0 - depth) * 70.0) / 255.0
+      ) * caustic;
+
+      float alpha = 0.5 + depth * 0.4; // shallow=50%, deep=90%
+      gl_FragColor = vec4(waterColor, alpha);
+      return;
+    }
+
+    // ── Terrain (faces 0, 1, 2) ──
     vec3 bc;
     if (biome == 0) bc = u_biomeColors[0];
     else if (biome == 1) bc = u_biomeColors[1];
@@ -145,24 +190,24 @@ const FRAG_SRC = `
       color += (v_dither - 0.5) * 0.08;
     }
 
-    // Apply face shading
-    color *= v_shade;
+    // Face shading
+    float shade = v_shade;
 
-    // Water: depth-dependent blue overlay (matches Canvas 2D renderer)
-    // Shallow = bright translucent blue, deep = dark opaque blue
-    if (biome <= 1 && v_faceType < 0.5) {
-      float depth = (0.20 - v_elev) / 0.18; // normalized depth (0=shore, 1=abyss)
-      depth = clamp(depth, 0.0, 1.0);
-      float alpha = 0.3 + depth * 0.6;
-      vec3 waterColor = vec3(
-        (20.0 + (1.0 - depth) * 60.0) / 255.0,
-        (80.0 + (1.0 - depth) * 80.0) / 255.0,
-        (140.0 + (1.0 - depth) * 60.0) / 255.0
-      );
-      color = mix(color, waterColor, alpha);
+    // Side face gradient: darker toward the base of the pillar
+    if (v_faceType > 0.5 && v_faceType < 2.5) {
+      shade *= (1.0 - v_pillarT * 0.5); // 100% at top → 50% at bottom
     }
 
-    // Population overlay — blend on top faces only
+    color *= shade;
+
+    // Underwater seafloor tint — darken terrain under water
+    if (biome <= 1 && v_faceType < 0.5) {
+      float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
+      color *= (0.4 + 0.6 * (1.0 - depth)); // dim seafloor in deep water
+      color += vec3(0.0, 0.02, 0.06) * depth; // blue tint at depth
+    }
+
+    // Population overlay on top faces
     if (u_popMode > 0.5 && v_faceType < 0.5 && v_popColor.a > 0.01) {
       color = mix(color, v_popColor.rgb, v_popColor.a * 0.6);
     }
@@ -171,11 +216,11 @@ const FRAG_SRC = `
   }
 `;
 
-// ── River shaders (line segments in iso space) ──
+// ── River shaders ──
 
 const RIVER_VERT_SRC = `
   precision mediump float;
-  attribute vec2 a_pos;           // grid position (row, col) as float
+  attribute vec2 a_pos;
   attribute float a_width;
 
   uniform float u_gridSize;
@@ -197,7 +242,6 @@ const RIVER_VERT_SRC = `
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
-    // Standard isometric projection
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
@@ -208,14 +252,12 @@ const RIVER_VERT_SRC = `
 
     vec2 pos = vec2(ix, iy - iz);
 
-    // Screen-space rotation
     float cosR = cos(u_rotation);
     float sinR = sin(u_rotation);
     vec2 rotated = vec2(
       pos.x * cosR - pos.y * sinR,
       pos.x * sinR + pos.y * cosR
     );
-
     rotated.x += u_pan.x / u_resolution.x * 2.0;
     rotated.y += u_pan.y / u_resolution.y * 2.0;
 
@@ -254,6 +296,8 @@ export class MapRenderer {
     this.vertexCount = 0;
     this.riverVertCount = 0;
     this.popMode = false;
+    this.minElev = 0;
+    this.startTime = performance.now();
     this._init();
   }
 
@@ -290,6 +334,8 @@ export class MapRenderer {
       u_pan: gl.getUniformLocation(this.program, 'u_pan'),
       u_heightScale: gl.getUniformLocation(this.program, 'u_heightScale'),
       u_rotation: gl.getUniformLocation(this.program, 'u_rotation'),
+      u_minElev: gl.getUniformLocation(this.program, 'u_minElev'),
+      u_time: gl.getUniformLocation(this.program, 'u_time'),
       u_elevations: gl.getUniformLocation(this.program, 'u_elevations'),
       u_biomes: gl.getUniformLocation(this.program, 'u_biomes'),
       u_biomeColors: gl.getUniformLocation(this.program, 'u_biomeColors'),
@@ -326,7 +372,6 @@ export class MapRenderer {
       }
     }
 
-    // Create textures
     this.elevTexture = gl.createTexture();
     this.biomeTexture = gl.createTexture();
     this.popTexture = gl.createTexture();
@@ -338,14 +383,16 @@ export class MapRenderer {
     this.gridSize = gridSize;
     const G2 = gridSize * gridSize;
 
-    const numVerts = G2 * 3 * 6;
+    // 4 faces per tile: terrain top(0), right side(1), left side(2), water surface(3)
+    const FACES = 4;
+    const numVerts = G2 * FACES * 6;
     const quadData = new Float32Array(numVerts * 2);
     const tileData = new Float32Array(numVerts);
     const faceData = new Float32Array(numVerts);
 
     let vi = 0;
     for (let idx = 0; idx < G2; idx++) {
-      for (let face = 0; face < 3; face++) {
+      for (let face = 0; face < FACES; face++) {
         const corners = [[0,0],[1,0],[1,1],[0,0],[1,1],[0,1]];
         for (const [qx, qy] of corners) {
           quadData[vi * 2] = qx;
@@ -386,13 +433,19 @@ export class MapRenderer {
     const gl = this.gl;
     const gs = this.gridSize;
 
+    // Track global min elevation for pillar base
+    let minE = 1;
+    const elevU8 = new Uint8Array(gs * gs);
+    for (let i = 0; i < gs * gs; i++) {
+      const e = elevations[i];
+      if (e < minE) minE = e;
+      elevU8[i] = Math.min(255, Math.max(0, Math.round(e * 255)));
+    }
+    this.minElev = minE;
+
     // Elevation texture
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);
-    const elevU8 = new Uint8Array(gs * gs);
-    for (let i = 0; i < gs * gs; i++) {
-      elevU8[i] = Math.min(255, Math.max(0, Math.round(elevations[i] * 255)));
-    }
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, elevU8);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -408,7 +461,7 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    // Population overlay texture (RGBA — dominant species color + intensity as alpha)
+    // Population overlay texture
     if (populations && speciesColors) {
       const popRGBA = new Uint8Array(gs * gs * 4);
       for (let i = 0; i < gs * gs; i++) {
@@ -425,7 +478,6 @@ export class MapRenderer {
           popRGBA[i * 4 + 2] = sc[2];
           popRGBA[i * 4 + 3] = intensity;
         }
-        // else stays (0,0,0,0) — transparent
       }
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, this.popTexture);
@@ -433,18 +485,12 @@ export class MapRenderer {
     }
   }
 
-  /**
-   * Update river geometry from SharedArrayBuffer views.
-   * riverPaths: Int16Array of [r,c,...,-1,-1,...] per river
-   * riverMeta: Float32Array of [id,age,width,active] per river
-   */
   updateRivers(riverPaths, riverMeta) {
     if (this.fallback || !this.riverProgram) return;
     const gl = this.gl;
     const maxRivers = riverMeta.length / 4;
 
-    // Build line segment vertices from river paths
-    const positions = []; // [row, col] pairs
+    const positions = [];
     const widths = [];
     let rpIdx = 0;
 
@@ -452,9 +498,7 @@ export class MapRenderer {
       const riverId = riverMeta[ri * 4];
       if (riverId < 0) break;
       const width = Math.max(1, riverMeta[ri * 4 + 2]);
-      const active = riverMeta[ri * 4 + 3] > 0;
 
-      // Collect this river's path
       const path = [];
       while (rpIdx < riverPaths.length / 2) {
         const pr = riverPaths[rpIdx * 2];
@@ -466,7 +510,6 @@ export class MapRenderer {
 
       if (path.length < 2) continue;
 
-      // Emit line segments: each pair of consecutive points = 2 vertices
       for (let i = 0; i < path.length - 1; i++) {
         positions.push(path[i][0], path[i][1]);
         widths.push(width);
@@ -480,13 +523,8 @@ export class MapRenderer {
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.riverPosBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
-
     gl.bindBuffer(gl.ARRAY_BUFFER, this.riverWidthBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(widths), gl.DYNAMIC_DRAW);
-  }
-
-  setPopMode(enabled) {
-    this.popMode = enabled;
   }
 
   render(camera, biomeColors) {
@@ -503,6 +541,8 @@ export class MapRenderer {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    const time = (performance.now() - this.startTime) / 1000;
+
     // ── Draw terrain ──
     gl.useProgram(this.program);
 
@@ -513,9 +553,10 @@ export class MapRenderer {
     gl.uniform2f(this.locs.u_pan, camera.panX, camera.panY);
     gl.uniform1f(this.locs.u_heightScale, 80);
     gl.uniform1f(this.locs.u_rotation, camera.rotation || 0);
+    gl.uniform1f(this.locs.u_minElev, this.minElev);
+    gl.uniform1f(this.locs.u_time, time);
     gl.uniform1f(this.locs.u_popMode, this.popMode ? 1.0 : 0.0);
 
-    // Bind textures (in case render() is called before updateData())
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);
     gl.activeTexture(gl.TEXTURE1);
@@ -549,7 +590,6 @@ export class MapRenderer {
 
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
 
-    // Disable terrain attribs before switching programs
     gl.disableVertexAttribArray(this.locs.a_quad);
     gl.disableVertexAttribArray(this.locs.a_tileIdx);
     gl.disableVertexAttribArray(this.locs.a_faceType);
@@ -565,7 +605,7 @@ export class MapRenderer {
       gl.uniform2f(this.riverLocs.u_pan, camera.panX, camera.panY);
       gl.uniform1f(this.riverLocs.u_heightScale, 80);
       gl.uniform1f(this.riverLocs.u_rotation, camera.rotation || 0);
-      gl.uniform1i(this.riverLocs.u_elevations, 0); // reuse elevation texture
+      gl.uniform1i(this.riverLocs.u_elevations, 0);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.riverPosBuf);
       gl.enableVertexAttribArray(this.riverLocs.a_pos);
@@ -577,7 +617,6 @@ export class MapRenderer {
 
       gl.drawArrays(gl.LINES, 0, this.riverVertCount);
 
-      // Disable river attribs so they don't interfere
       gl.disableVertexAttribArray(this.riverLocs.a_pos);
       gl.disableVertexAttribArray(this.riverLocs.a_width);
     }
