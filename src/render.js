@@ -295,11 +295,10 @@ const FRAG_SRC = `
     // Uses elevation at coarse scale as a natural coherent noise source.
     // v_dither is per-tile hash, v_elev and v_veg provide spatial coherence.
 
-    // Smooth spatial variation: slow-changing noise from grid position
-    // (elevation already varies smoothly across the terrain)
-    float spatialVar = fract(sin(v_elev * 127.1 + v_veg * 311.7) * 43758.5);
-    // Blend with neighbor info for extra smoothness
-    float smoothVar = spatialVar * 0.6 + v_veg * 0.4;
+    // Smooth spatial variation from stable values (elevation + tile hash)
+    // Does NOT use vegetation — veg changes each tick, colors should not
+    float spatialVar = fract(sin(v_elev * 127.1 + v_dither * 311.7) * 43758.5);
+    float smoothVar = spatialVar * 0.6 + v_elev * 0.4;
 
     vec3 color;
 
@@ -308,7 +307,7 @@ const FRAG_SRC = `
       vec3 deepForest = vec3(0.10, 0.24, 0.06);      // shaded forest
       vec3 midForest = vec3(0.16, 0.34, 0.10);       // mid canopy
       vec3 lightForest = vec3(0.22, 0.42, 0.14);     // sunlit canopy
-      float forestT = clamp(v_veg * 0.7 + smoothVar * 0.3, 0.0, 1.0);
+      float forestT = clamp(v_forestDensity * 0.5 + smoothVar * 0.5, 0.0, 1.0);
       color = mix(deepForest, mix(midForest, lightForest, forestT), forestT);
       color += vec3(0.02, 0.03, 0.01) * v_elev;
 
