@@ -394,13 +394,15 @@ mapCanvas.addEventListener('dblclick', () => {
 });
 
 // Q/E to rotate map in 45° increments
-window.addEventListener('keydown', e => {
+document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const step = Math.PI / 4; // 45 degrees
   if (e.key === 'q' || e.key === 'Q') {
     camRotation -= step;
+    console.log('Rotate left:', camRotation);
   } else if (e.key === 'e' || e.key === 'E') {
     camRotation += step;
+    console.log('Rotate right:', camRotation);
   }
 });
 
