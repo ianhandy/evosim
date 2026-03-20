@@ -184,76 +184,78 @@ def _generate_terrain(seed_str):
         hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
 
     # ── Also uplift along fault lines directly — plate collision ridges ──
+    rows_grid, cols_grid = np.meshgrid(np.arange(gs), np.arange(gs), indexing='ij')
     for fault in faults:
         fx, fy, fdx, fdy = fault
         ridge_width = gs * rng.uniform(0.03, 0.07)
         ridge_power = rng.uniform(0.03, 0.08)
-        for r in range(gs):
-            for c in range(gs):
-                # Distance from point to fault line
-                dx = r - fx
-                dy = c - fy
-                # Project onto fault direction
-                along = dx * fdx + dy * fdy
-                perp = abs(dx * fdy - dy * fdx)
-                if perp < ridge_width:
-                    t = 1 - perp / ridge_width
-                    grid[r, c] += ridge_power * t * t
+        dx = rows_grid - fx
+        dy = cols_grid - fy
+        perp = np.abs(dx * fdy - dy * fdx)
+        mask = perp < ridge_width
+        t = 1 - perp / ridge_width
+        grid[mask] += ridge_power * (t[mask] ** 2)
 
     # ── Simulate geological epochs ──
     # More epochs = more eruptions = more land
     num_epochs = rng.randint(80, 200)
     snapshot_epoch = rng.randint(int(num_epochs * 0.6), num_epochs)
 
+    # Pre-build distance grids for each hotspot (reused every epoch)
+    hs_masks = []
+    for hs in hotspots:
+        cx, cy = int(hs['x']), int(hs['y'])
+        max_r = int(hs['radius'] * 1.3) + 2  # max jittered radius
+        r_lo, r_hi = max(0, cx - max_r), min(gs, cx + max_r + 1)
+        c_lo, c_hi = max(0, cy - max_r), min(gs, cy + max_r + 1)
+        local_rows = np.arange(r_lo, r_hi)[:, None]
+        local_cols = np.arange(c_lo, c_hi)[None, :]
+        dist = np.sqrt((local_rows - cx) ** 2 + (local_cols - cy) ** 2).astype(np.float32)
+        hs_masks.append((r_lo, r_hi, c_lo, c_hi, dist))
+
     for epoch in range(num_epochs):
-        # ── Eruptions from each hotspot ──
-        for hs in hotspots:
-            if rng.random() < 0.7:  # 70% chance of eruption per tick
-                # Jitter eruption strength and radius for organic feel
+        # ── Eruptions from each hotspot (vectorized) ──
+        for idx, hs in enumerate(hotspots):
+            if rng.random() < 0.7:
                 erupt_power = hs['power'] * rng.uniform(0.6, 1.4)
                 erupt_radius = hs['radius'] * rng.uniform(0.7, 1.3)
+                r_lo, r_hi, c_lo, c_hi, dist = hs_masks[idx]
+                in_range = dist < erupt_radius
+                t = 1 - dist / erupt_radius
+                grid[r_lo:r_hi, c_lo:c_hi] += np.where(in_range, erupt_power * t * t, 0)
 
-                # Deposit elevation with squared falloff from hotspot center
-                cx, cy = int(hs['x']), int(hs['y'])
-                ir = int(erupt_radius) + 1
-                for dr in range(-ir, ir + 1):
-                    for dc in range(-ir, ir + 1):
-                        r, c = cx + dr, cy + dc
-                        if 0 <= r < gs and 0 <= c < gs:
-                            dist = math.sqrt(dr * dr + dc * dc)
-                            if dist < erupt_radius:
-                                # Squared falloff: steep conical profile
-                                t = 1 - (dist / erupt_radius)
-                                deposit = erupt_power * t * t
-                                grid[r, c] += deposit
-
-            # ── Island chain trail: walk backward along drift vector ──
+            # ── Island chain trail ──
             trail_len = int(epoch * drift_speed * 0.6)
-            for step in range(1, min(trail_len, gs)):
-                tr = int(hs['x'] - drift_dx * step * 1.2)
-                tc = int(hs['y'] - drift_dy * step * 1.2)
-                if 0 <= tr < gs and 0 <= tc < gs:
-                    strength = hs['power'] * 0.5 / (1 + step * 0.1)
-                    trail_r = max(2, int(hs['radius'] * 0.6))
-                    for dr in range(-trail_r, trail_r + 1):
-                        for dc in range(-trail_r, trail_r + 1):
-                            rr, cc = tr + dr, tc + dc
-                            if 0 <= rr < gs and 0 <= cc < gs:
-                                d = math.sqrt(dr*dr + dc*dc)
-                                if d < trail_r:
-                                    t = 1 - d / trail_r
-                                    grid[rr, cc] += strength * t * t * rng.uniform(0.6, 1.0) * 0.15
+            if trail_len > 1:
+                trail_r = max(2, int(hs['radius'] * 0.6))
+                steps = np.arange(1, min(trail_len, gs))
+                trs = (hs['x'] - drift_dx * steps * 1.2).astype(int)
+                tcs = (hs['y'] - drift_dy * steps * 1.2).astype(int)
+                valid = (trs >= trail_r) & (trs < gs - trail_r) & (tcs >= trail_r) & (tcs < gs - trail_r)
+                # Pre-build trail kernel once
+                if epoch == 0 or not hasattr(_generate_terrain, '_trail_kernel') or _generate_terrain._trail_r != trail_r:
+                    kr = np.arange(-trail_r, trail_r + 1)
+                    kc = np.arange(-trail_r, trail_r + 1)
+                    kd = np.sqrt(kr[:, None] ** 2 + kc[None, :] ** 2).astype(np.float32)
+                    k_mask = kd < trail_r
+                    k_falloff = np.where(k_mask, (1 - kd / trail_r) ** 2, 0).astype(np.float32)
+                    _generate_terrain._trail_kernel = k_falloff
+                    _generate_terrain._trail_r = trail_r
+                k_falloff = _generate_terrain._trail_kernel
+                for si in range(len(steps)):
+                    if not valid[si]:
+                        continue
+                    tr, tc = int(trs[si]), int(tcs[si])
+                    strength = hs['power'] * 0.5 / (1 + steps[si] * 0.1) * 0.15
+                    noise = rng.uniform(0.6, 1.0)
+                    grid[tr - trail_r:tr + trail_r + 1, tc - trail_r:tc + trail_r + 1] += k_falloff * (strength * noise)
 
-        # ── Erosion: flat subtraction ──
-        for r in range(gs):
-            for c in range(gs):
-                if grid[r, c] > 0:
-                    # Land erodes slowly; fresh lava erodes faster
-                    rate = 0.008 if grid[r, c] > 0.85 else 0.002
-                    grid[r, c] -= rate
+        # ── Erosion (vectorized) ──
+        land = grid > 0
+        rates = np.where(grid > 0.85, 0.008, 0.002)
+        grid[land] -= rates[land]
 
-        # ── Smoothing: weighted blur (6:1:1:1:1 kernel) ──
-        # Spreads material outward, softens peaks, widens coastlines
+        # ── Smoothing ──
         blurred = gaussian_filter(grid, sigma=0.6, mode='nearest')
         grid = grid * 0.85 + blurred * 0.15
 
@@ -264,6 +266,36 @@ def _generate_terrain(seed_str):
     # Use the snapshot (or final state if snapshot wasn't reached)
     if 'snapshot' in dir():
         grid = snapshot
+
+    # ── Center the landmass ──
+    # Find center of mass of all land (elevation > 0) and circular-shift
+    # the grid so the island sits in the middle. This preserves the natural
+    # shape from the geological sim — just recenters it.
+    land_mask = (grid > 0).astype(np.float32)
+    land_total = land_mask.sum()
+    if land_total > 0:
+        # Circular mean — handles wrapping correctly
+        rows = np.arange(gs)
+        cols = np.arange(gs)
+        row_angles = rows * 2 * math.pi / gs
+        col_angles = cols * 2 * math.pi / gs
+        # Weight by elevation so peaks pull harder than barely-land tiles
+        weights = grid * land_mask
+        row_weights = weights.sum(axis=1)  # sum across columns
+        col_weights = weights.sum(axis=0)  # sum across rows
+        # Circular mean for row
+        sin_r = (row_weights * np.sin(row_angles)).sum()
+        cos_r = (row_weights * np.cos(row_angles)).sum()
+        cm_row = math.atan2(sin_r, cos_r) * gs / (2 * math.pi) % gs
+        # Circular mean for col
+        sin_c = (col_weights * np.sin(col_angles)).sum()
+        cos_c = (col_weights * np.cos(col_angles)).sum()
+        cm_col = math.atan2(sin_c, cos_c) * gs / (2 * math.pi) % gs
+        # Shift so center of mass lands at grid center
+        shift_r = int(round(gs / 2 - cm_row))
+        shift_c = int(round(gs / 2 - cm_col))
+        grid = np.roll(grid, shift_r, axis=0)
+        grid = np.roll(grid, shift_c, axis=1)
 
     # ── Detail noise pass — break up the smooth volcanic slopes ──
     # FBM noise adds natural terrain roughness: ridges, gullies, uneven surfaces
@@ -281,15 +313,9 @@ def _generate_terrain(seed_str):
         medium = (medium - med_lo) / (med_hi - med_lo)
 
     # Blend noise into the terrain — more effect on land, less on deep ocean
-    for r in range(gs):
-        for c in range(gs):
-            if grid[r, c] > -0.05:
-                # Land and shallow water: add roughness
-                grid[r, c] += (detail[r, c] - 0.5) * 0.06
-                grid[r, c] += (medium[r, c] - 0.5) * 0.04
-            else:
-                # Deep ocean: subtle seafloor variation
-                grid[r, c] += (detail[r, c] - 0.5) * 0.02
+    land_shallow = grid > -0.05
+    grid += np.where(land_shallow, (detail - 0.5) * 0.06 + (medium - 0.5) * 0.04,
+                                   (detail - 0.5) * 0.02)
 
     # ── Edge-to-interior gradient ──
     # Push edges down (ocean), push interior up (land).
@@ -301,17 +327,16 @@ def _generate_terrain(seed_str):
         edge_noise = (edge_noise - en_lo) / (en_hi - en_lo)
 
     border_depth = gs * 0.12  # narrower ocean border
-    for r in range(gs):
-        for c in range(gs):
-            edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
-            local_border = border_depth * (0.5 + edge_noise[r, c] * 1.0)
-            if edge_dist < local_border:
-                t = edge_dist / local_border
-                push = (1 - t) ** 2 * 0.20  # moderate push
-                grid[r, c] -= push
-            else:
-                interior_t = (edge_dist - local_border) / max(1, gs * 0.5 - local_border)
-                grid[r, c] += interior_t * 0.03  # stronger interior uplift
+    row_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
+    col_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
+    edge_dist = np.minimum(row_dist[:, None], col_dist[None, :]).astype(np.float32)
+    local_border = border_depth * (0.5 + edge_noise * 1.0)
+    in_border = edge_dist < local_border
+    t_border = np.where(in_border, edge_dist / np.maximum(local_border, 0.001), 0)
+    push = (1 - t_border) ** 2 * 0.20
+    interior_denom = np.maximum(1, gs * 0.5 - local_border)
+    interior_t = (edge_dist - local_border) / interior_denom
+    grid -= np.where(in_border, push, -interior_t * 0.03)
 
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
@@ -323,21 +348,15 @@ def _generate_terrain(seed_str):
     zero_norm = (0 - lo) / (hi - lo)
 
     # Map so that raw 0 (sea level) → 0.20 in our output
-    for r in range(gs):
-        for c in range(gs):
-            raw_norm = (grid[r, c] - lo) / (hi - lo)
-            if raw_norm <= zero_norm:
-                # Underwater: [0, zero_norm] → [0, 0.20]
-                elevations[r, c] = (raw_norm / max(0.001, zero_norm)) * 0.20
-            else:
-                # Land: [zero_norm, 1] → [0.20, 1.0]
-                elevations[r, c] = 0.20 + (raw_norm - zero_norm) / max(0.001, 1 - zero_norm) * 0.80
+    raw_norm = (grid - lo) / (hi - lo)
+    underwater = raw_norm <= zero_norm
+    elevations[:] = np.where(underwater,
+        (raw_norm / max(0.001, zero_norm)) * 0.20,
+        0.20 + (raw_norm - zero_norm) / max(0.001, 1 - zero_norm) * 0.80)
 
     _assign_biomes()
 
-    for r in range(gs):
-        for c in range(gs):
-            vegetation[r, c] = min(1.0, VEG_REGROWTH[biomes[r, c]] * 10)
+    vegetation[:] = np.minimum(1.0, VEG_REGROWTH[biomes] * 10)
 
 
 def _assign_biomes():
@@ -345,14 +364,11 @@ def _assign_biomes():
     Classify biomes from elevation. Sea level is at ~0.20.
     Below 0.20 = underwater. Above = land types by elevation.
     """
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            e = elevations[r, c]
-            if   e < 0.08: biomes[r, c] = BIOME_DEEP_WATER      # deep ocean
-            elif e < 0.20: biomes[r, c] = BIOME_SHALLOW_MARSH    # shallow water
-            elif e < 0.25: biomes[r, c] = BIOME_TIDAL_FLATS      # beach / sand
-            elif e < 0.55: biomes[r, c] = BIOME_REED_BEDS        # forest (starts lower)
-            else:          biomes[r, c] = BIOME_ROCKY_SHORE       # highland / volcanic peak
+    biomes[:] = np.where(elevations < 0.08, BIOME_DEEP_WATER,
+               np.where(elevations < 0.20, BIOME_SHALLOW_MARSH,
+               np.where(elevations < 0.25, BIOME_TIDAL_FLATS,
+               np.where(elevations < 0.55, BIOME_REED_BEDS,
+                                           BIOME_ROCKY_SHORE)))).astype(np.uint8)
 
 
 # ── POPULATION SEEDING ────────────────────────────────────────────────────────
@@ -383,119 +399,166 @@ def _prob_round(x):
     return base
 
 
-def _k(r, c, s, season):
-    biome = biomes[r, c]
-    suit = HABITAT_SUIT[s, biome]
-    if suit < 0.05: return 0
-    veg = vegetation[r, c]
-    met = traits[r, c, s, T_METABOLISM]
 
-    if   s == CRAWLER:   food = veg
-    elif s == CRAB:      food = veg * 0.4 + 0.4
-    elif s == VELOTHRIX: food = veg * 0.6 + 0.2
-    elif s == WORM:      food = min(1.0, 0.3 + total_deaths_last / max(1, G2 * 3))
-    else:                food = 0.5  # Leviathan — prey-driven
+def _compute_k_grid(season):
+    """Vectorized carrying capacity for all tiles and species. Returns (gs, gs, NUM_SPECIES) array."""
+    gs = GRID_SIZE
+    k_grid = np.zeros((gs, gs, NUM_SPECIES), dtype=np.float32)
+    suit_grid = HABITAT_SUIT[:, biomes].T  # (gs, gs, NUM_SPECIES) — lookup biome suitability
+    # Reshape so suit_grid is (gs, gs, NUM_SPECIES)
+    # HABITAT_SUIT is (NUM_SPECIES, NUM_BIOMES), biomes is (gs, gs)
+    # HABITAT_SUIT[:, biomes] gives (NUM_SPECIES, gs, gs), transpose to (gs, gs, NUM_SPECIES)
+    suit_grid = np.transpose(HABITAT_SUIT[:, biomes.ravel()].reshape(NUM_SPECIES, gs, gs), (1, 2, 0))
 
-    food_mod = max(0.05, 0.3 + 0.7 * food)
+    met = traits[:, :, :, T_METABOLISM]  # (gs, gs, NUM_SPECIES)
+    veg = vegetation[:, :, np.newaxis]   # (gs, gs, 1)
+
+    # Food availability per species
+    food = np.zeros((gs, gs, NUM_SPECIES), dtype=np.float32)
+    food[:, :, CRAWLER] = veg[:, :, 0]
+    food[:, :, CRAB] = veg[:, :, 0] * 0.4 + 0.4
+    food[:, :, VELOTHRIX] = veg[:, :, 0] * 0.6 + 0.2
+    worm_food = np.minimum(1.0, 0.3 + total_deaths_last / max(1, G2 * 3))
+    food[:, :, WORM] = worm_food
+    food[:, :, LEVIATHAN] = 0.5
+
+    food_mod = np.maximum(0.05, 0.3 + 0.7 * food)
     met_amp = food_mod ** (0.7 + met * 0.6)
-    result = BASE_K[s] * suit * met_amp * (0.85 + 0.15 * season)
+    k_grid = BASE_K[np.newaxis, np.newaxis, :] * suit_grid * met_amp * (0.85 + 0.15 * season)
 
-    # Algal bloom: boost Worm/Velothrix K 15%, penalize Leviathan
+    # Algal bloom modifier
     if _has_active_event('algal_bloom'):
-        if s in (WORM, VELOTHRIX):
-            result *= 1.15
-        elif s == LEVIATHAN:
-            result *= 0.8
+        k_grid[:, :, WORM] *= 1.15
+        k_grid[:, :, VELOTHRIX] *= 1.15
+        k_grid[:, :, LEVIATHAN] *= 0.8
 
-    return max(1, result) if not math.isnan(result) else 1
+    # Floor: where suit < 0.05, k = 0; elsewhere min 1
+    low_suit = suit_grid < 0.05
+    k_grid[low_suit] = 0
+    k_grid = np.where(low_suit, 0, np.maximum(1, k_grid))
+    np.nan_to_num(k_grid, copy=False, nan=1.0)
+    return k_grid
 
 
-def _step_growth(r, c, season):
-    deaths = 0
+def _step_all_tiles(season):
+    """Vectorized per-tile updates: growth, predation, competition, vegetation, traits."""
+    global total_deaths_last
+    gs = GRID_SIZE
+    total_deaths = 0
+
+    pop_f = pops.astype(np.float32)  # (gs, gs, NUM_SPECIES)
+    k_grid = _compute_k_grid(season)
+
+    # ── Growth (vectorized per species) ──
     for s in range(NUM_SPECIES):
-        pop = int(pops[r, c, s])
-        if pop <= 0: continue
-        k = _k(r, c, s, season)
-        if k <= 0:
-            d = _prob_round(pop * 0.1)
-            pops[r, c, s] = max(0, pop - d)
-            deaths += d
-            continue
-        clutch = traits[r, c, s, T_CLUTCH]
-        longevity = traits[r, c, s, T_LONGEVITY]
-        r_eff = BASE_R[s] * (0.5 + clutch)
-        growth = r_eff * pop * (1 - pop / k)
-        mort = 0.02 + 0.08 * (1 - longevity)
-        d = _prob_round(pop * mort)
-        new_pop = max(0, min(65535, pop + _prob_round(growth) - d))
-        deaths += d + max(0, pop - new_pop + d)
-        pops[r, c, s] = new_pop
-    return deaths
+        pop_s = pop_f[:, :, s]
+        k_s = k_grid[:, :, s]
+        alive = pop_s > 0
 
+        # Tiles with no K — decay 10%
+        no_k = alive & (k_s <= 0)
+        decay = np.round(pop_s * 0.1).astype(np.int32)
+        pop_s_new = pop_s.copy()
+        pop_s_new[no_k] = np.maximum(0, pop_s[no_k] - decay[no_k])
 
-def _step_predation(r, c):
-    deaths = 0
+        # Tiles with K — logistic growth + mortality
+        has_k = alive & (k_s > 0)
+        if np.any(has_k):
+            clutch = traits[:, :, s, T_CLUTCH]
+            longevity = traits[:, :, s, T_LONGEVITY]
+            r_eff = BASE_R[s] * (0.5 + clutch)
+            growth = r_eff * pop_s * (1 - pop_s / np.maximum(k_s, 1))
+            mort_rate = 0.02 + 0.08 * (1 - longevity)
+            mort = np.round(pop_s * mort_rate).astype(np.float32)
+            # Probabilistic rounding for growth
+            growth_floor = np.floor(growth).astype(np.float32)
+            growth_frac = growth - growth_floor
+            growth_rounded = growth_floor + (np.random.random((gs, gs)) < np.abs(growth_frac)).astype(np.float32) * np.sign(growth_frac)
+            new_pop = pop_s + growth_rounded - mort
+            new_pop = np.clip(new_pop, 0, 65535)
+            pop_s_new[has_k] = new_pop[has_k]
+            total_deaths += int(np.sum(mort[has_k]))
+
+        total_deaths += int(np.sum(decay[no_k]))
+        pops[:, :, s] = np.clip(pop_s_new, 0, 65535).astype(np.uint16)
+
+    # ── Predation (vectorized per pair) ──
     for pred, prey, base_atk, h_time in PREDATION:
-        pp = int(pops[r, c, pred])
-        qp = int(pops[r, c, prey])
-        if pp <= 0 or qp <= 0: continue
-        atk = base_atk
-        if pred == LEVIATHAN: atk *= (0.5 + traits[r, c, LEVIATHAN, T_SPECIFIC])
-        if prey == VELOTHRIX: atk *= (0.7 + 0.6 * traits[r, c, VELOTHRIX, T_SPECIFIC])
-        elif prey == WORM: atk *= (0.7 + 0.6 * traits[r, c, WORM, T_SPECIFIC])
-        if prey == CRAWLER: atk *= (1.0 - traits[r, c, CRAWLER, T_SPECIFIC] * 0.6)
-        ks = 1.0
-        if prey == CRAB: ks = 1.0 - traits[r, c, CRAB, T_SPECIFIC] * 0.5
-        kills = atk * pp * qp / (1 + h_time * qp)
-        kills = _prob_round(min(kills * ks, qp * 0.5))
-        pops[r, c, prey] = max(0, qp - kills)
-        deaths += kills
-    return deaths
+        pp = pops[:, :, pred].astype(np.float32)
+        qp = pops[:, :, prey].astype(np.float32)
+        active = (pp > 0) & (qp > 0)
+        if not np.any(active):
+            continue
+        atk = np.full((gs, gs), base_atk, dtype=np.float32)
+        if pred == LEVIATHAN:
+            atk *= (0.5 + traits[:, :, LEVIATHAN, T_SPECIFIC])
+        if prey == VELOTHRIX:
+            atk *= (0.7 + 0.6 * traits[:, :, VELOTHRIX, T_SPECIFIC])
+        elif prey == WORM:
+            atk *= (0.7 + 0.6 * traits[:, :, WORM, T_SPECIFIC])
+        if prey == CRAWLER:
+            atk *= (1.0 - traits[:, :, CRAWLER, T_SPECIFIC] * 0.6)
+        ks = np.ones((gs, gs), dtype=np.float32)
+        if prey == CRAB:
+            ks = 1.0 - traits[:, :, CRAB, T_SPECIFIC] * 0.5
+        kills = atk * pp * qp / (1 + h_time * qp) * ks
+        kills = np.minimum(kills, qp * 0.5)
+        kills = np.round(kills).astype(np.int32)
+        kills[~active] = 0
+        pops[:, :, prey] = np.maximum(0, pops[:, :, prey].astype(np.int32) - kills).astype(np.uint16)
+        total_deaths += int(np.sum(kills))
 
-
-def _step_competition(r, c):
-    deaths = 0
+    # ── Competition (vectorized per pair) ──
     for sa, sb, coeff in COMPETITION:
-        pa, pb = int(pops[r, c, sa]), int(pops[r, c, sb])
-        if pa > 0 and pb > 0:
-            la = _prob_round(coeff * pa * pb)
-            lb = _prob_round(coeff * pa * pb)
-            pops[r, c, sa] = max(0, pa - la)
-            pops[r, c, sb] = max(0, pb - lb)
-            deaths += la + lb
-    return deaths
+        pa = pops[:, :, sa].astype(np.float32)
+        pb = pops[:, :, sb].astype(np.float32)
+        active = (pa > 0) & (pb > 0)
+        if not np.any(active):
+            continue
+        losses = np.round(coeff * pa * pb).astype(np.int32)
+        losses[~active] = 0
+        pops[:, :, sa] = np.maximum(0, pops[:, :, sa].astype(np.int32) - losses).astype(np.uint16)
+        pops[:, :, sb] = np.maximum(0, pops[:, :, sb].astype(np.int32) - losses).astype(np.uint16)
+        total_deaths += int(np.sum(losses)) * 2
 
-
-def _step_vegetation(r, c, season):
+    # ── Vegetation (vectorized) ──
+    veg_rates = np.array([0, 0, 0, 0, 0], dtype=np.float32)  # per species consumption multiplier
+    veg_rates[CRAWLER] = 1.0
+    veg_rates[CRAB] = 0.3
+    veg_rates[VELOTHRIX] = 0.5
     for s in [CRAWLER, CRAB, VELOTHRIX]:
-        pop = int(pops[r, c, s])
-        if pop <= 0: continue
-        met = traits[r, c, s, T_METABOLISM]
-        rate = 0.001 * (0.5 + met)
-        if s == CRAB: rate *= 0.3
-        elif s == VELOTHRIX: rate *= 0.5
-        vegetation[r, c] -= rate * pop
-    biome = biomes[r, c]
-    vegetation[r, c] += VEG_REGROWTH[biome] * (1 - vegetation[r, c]) * season
-    vegetation[r, c] = max(0.0, min(1.0, float(vegetation[r, c])))
+        pop_s = pops[:, :, s].astype(np.float32)
+        met = traits[:, :, s, T_METABOLISM]
+        rate = 0.001 * (0.5 + met) * veg_rates[s]
+        vegetation[:] -= rate * pop_s
+    regrowth = VEG_REGROWTH[biomes]
+    vegetation[:] += regrowth * (1 - vegetation) * season
+    np.clip(vegetation, 0.0, 1.0, out=vegetation)
 
-
-def _step_traits(r, c):
+    # ── Traits (vectorized per species) ──
     for s in range(NUM_SPECIES):
-        pop = int(pops[r, c, s])
-        if pop < 2: continue
-        mut = 0.001 + traits[r, c, s, T_MUTATION] * 0.049
+        pop_s = pops[:, :, s].astype(np.float32)
+        alive = pop_s >= 2
+        if not np.any(alive):
+            continue
+        mut = 0.001 + traits[:, :, s, T_MUTATION] * 0.049
         for t in range(NUM_TRAITS):
-            mean = float(traits[r, c, s, t])
-            var = float(trait_var[r, c, s, t])
-            drift_v = mean * (1 - mean) / (2 * pop)
-            mean += random.gauss(0, math.sqrt(max(0, drift_v)))
+            mean = traits[:, :, s, t].copy()
+            var = trait_var[:, :, s, t].copy()
+            drift_v = mean * (1 - mean) / (2 * np.maximum(pop_s, 1))
+            drift_std = np.sqrt(np.maximum(0, drift_v))
+            mean += np.random.normal(0, 1, (gs, gs)).astype(np.float32) * drift_std
             var += mut * MUTATION_STEP
             var *= 0.99
-            if math.isnan(mean): mean = 0.5
-            if math.isnan(var): var = 0.04
-            traits[r, c, s, t] = max(0.001, min(0.999, mean))
-            trait_var[r, c, s, t] = max(0.001, min(0.25, var))
+            np.nan_to_num(mean, copy=False, nan=0.5)
+            np.nan_to_num(var, copy=False, nan=0.04)
+            np.clip(mean, 0.001, 0.999, out=mean)
+            np.clip(var, 0.001, 0.25, out=var)
+            # Only write alive tiles
+            traits[:, :, s, t] = np.where(alive, mean, traits[:, :, s, t])
+            trait_var[:, :, s, t] = np.where(alive, var, trait_var[:, :, s, t])
+
+    return total_deaths
 
 
 def _step_migration():
@@ -563,7 +626,8 @@ def _check_events(season):
     if random.random() < EVENT_PROBS['disease']:
         target = random.randint(0, NUM_SPECIES - 1)
         # Find a tile where this species has significant population
-        candidates = [(r,c) for r in range(GRID_SIZE) for c in range(GRID_SIZE) if pops[r,c,target] > 10]
+        coords = np.argwhere(pops[:, :, target] > 10)
+        candidates = [(int(r), int(c)) for r, c in coords]
         if candidates:
             er, ec = random.choice(candidates)
             duration = random.randint(10, 30)
@@ -598,8 +662,8 @@ def _check_events(season):
         rocky_count = int(np.sum(biomes == BIOME_ROCKY_SHORE))
         if rocky_count < G2 * 0.25:  # cap at 25%
             # Find a shallow/tidal tile to convert
-            candidates = [(r,c) for r in range(GRID_SIZE) for c in range(GRID_SIZE)
-                          if biomes[r,c] in (BIOME_SHALLOW_MARSH, BIOME_TIDAL_FLATS)]
+            coords = np.argwhere((biomes == BIOME_SHALLOW_MARSH) | (biomes == BIOME_TIDAL_FLATS))
+            candidates = [(int(r), int(c)) for r, c in coords]
             if candidates:
                 r, c = random.choice(candidates)
                 elevations[r, c] = min(1.0, elevations[r, c] + 0.15)
@@ -619,22 +683,18 @@ def _apply_active_events(season):
 
         if evt['type'] == 'drought':
             # Reduce vegetation regrowth by 60%
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    vegetation[r, c] *= 0.998  # slow drain
+            vegetation *= 0.998
 
         elif evt['type'] == 'disease':
             s = evt['species']
             er, ec = evt['epicenter']
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    if pops[r, c, s] <= 0:
-                        continue
-                    dist = abs(r - er) + abs(c - ec)
-                    severity = max(0, 1 - dist / (GRID_SIZE * 0.5))
-                    if severity > 0:
-                        kills = _prob_round(pops[r, c, s] * 0.05 * severity)
-                        pops[r, c, s] = max(0, int(pops[r, c, s]) - kills)
+            rows = np.arange(GRID_SIZE)[:, None]
+            cols = np.arange(GRID_SIZE)[None, :]
+            dist = np.abs(rows - er) + np.abs(cols - ec)
+            severity = np.maximum(0, 1 - dist / (GRID_SIZE * 0.5))
+            pop_s = pops[:, :, s].astype(np.float32)
+            kills = np.round(pop_s * 0.05 * severity).astype(np.int32)
+            pops[:, :, s] = np.maximum(0, pops[:, :, s].astype(np.int32) - kills).astype(np.uint16)
 
         elif evt['type'] == 'algal_bloom':
             # Boost Worm K, reduce Leviathan predation effectiveness
@@ -644,19 +704,15 @@ def _apply_active_events(season):
         elif evt['type'] == 'tidal_surge':
             # Temporarily lower coastal tile elevations
             if age == 0:  # apply once at start
-                for r in range(GRID_SIZE):
-                    for c in range(GRID_SIZE):
-                        if elevations[r, c] < 0.35:
-                            elevations[r, c] = max(0, elevations[r, c] - 0.05)
+                coastal = elevations < 0.35
+                elevations[coastal] = np.maximum(0, elevations[coastal] - 0.05)
 
     for evt in expired:
         active_events.remove(evt)
         # Restore tidal surge elevation
         if evt['type'] == 'tidal_surge':
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    if elevations[r, c] < 0.30:
-                        elevations[r, c] += 0.05
+            low = elevations < 0.30
+            elevations[low] += 0.05
 
 
 def _has_active_event(event_type):
@@ -675,24 +731,17 @@ def _apply_erosion():
     Equation: Δelev = -ε × max(0, elev - mean_neighbor_elev)
     See evolution-simulation-research.md §12.8
     """
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            e = elevations[r, c]
-            if e < 0.3:
-                continue  # don't erode low tiles
-            # Mean neighbor elevation
-            neighbors = []
-            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nr, nc = r+dr, c+dc
-                if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
-                    neighbors.append(elevations[nr, nc])
-            if not neighbors:
-                continue
-            mean_n = sum(neighbors) / len(neighbors)
-            diff = e - mean_n
-            if diff > 0:
-                elevations[r, c] -= EROSION_RATE * diff
-                elevations[r, c] = max(0, elevations[r, c])
+    gs = GRID_SIZE
+    # Compute mean neighbor elevation using shifted arrays
+    # Pad with edge values for boundary handling
+    padded = np.pad(elevations, 1, mode='edge')
+    mean_n = (padded[:-2, 1:-1] + padded[2:, 1:-1] +
+              padded[1:-1, :-2] + padded[1:-1, 2:]) / 4.0
+    high = elevations >= 0.3
+    diff = elevations - mean_n
+    erode_mask = high & (diff > 0)
+    elevations[erode_mask] -= EROSION_RATE * diff[erode_mask]
+    np.maximum(elevations, 0, out=elevations)
     # Reclassify biomes after elevation changes
     _assign_biomes()
 
@@ -721,16 +770,13 @@ def _spawn_river():
     if random.random() > RIVER_SPAWN_PROB:
         return
     # Find high-elevation tiles without rivers
-    candidates = []
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            if elevations[r, c] > 0.7 and not (tile_flags[r, c] & 1):
-                candidates.append((r, c, float(elevations[r, c])))
-    if not candidates:
+    high_no_river = (elevations > 0.7) & ((tile_flags & 1) == 0)
+    if not np.any(high_no_river):
         return
-    # Weight by elevation
-    candidates.sort(key=lambda x: -x[2])
-    r, c, _ = candidates[0]
+    # Pick highest
+    masked = np.where(high_no_river, elevations, -1)
+    idx = np.unravel_index(np.argmax(masked), masked.shape)
+    r, c = int(idx[0]), int(idx[1])
     river = {
         'id': _next_river_id,
         'path': [(r, c)],
@@ -1028,21 +1074,14 @@ def _check_speciation():
         if speciation_detected[s] or not species_alive[s]:
             continue
 
-        # Split into north/south subpopulations
-        north_sum, north_pop = 0.0, 0
-        south_sum, south_pop = 0.0, 0
-        for r in range(GRID_SIZE):
-            for c in range(GRID_SIZE):
-                p = int(pops[r, c, s])
-                if p <= 0:
-                    continue
-                t = traits[r, c, s, T_SPECIFIC]
-                if r < mid:
-                    north_sum += t * p
-                    north_pop += p
-                else:
-                    south_sum += t * p
-                    south_pop += p
+        # Split into north/south subpopulations (vectorized)
+        pop_s = pops[:, :, s].astype(np.float32)
+        trait_s = traits[:, :, s, T_SPECIFIC]
+        weighted = trait_s * pop_s
+        north_pop = int(pop_s[:mid, :].sum())
+        south_pop = int(pop_s[mid:, :].sum())
+        north_sum = float(weighted[:mid, :].sum())
+        south_sum = float(weighted[mid:, :].sum())
 
         if north_pop < 10 or south_pop < 10:
             speciation_gens[s] = 0
@@ -1083,10 +1122,9 @@ def _check_extinction():
             peak_pops[s] = total
         if total > 0:
             # Find a tile where they exist (for last_seen_tile)
-            for r in range(GRID_SIZE):
-                for c in range(GRID_SIZE):
-                    if pops[r, c, s] > 0:
-                        last_seen_tile[s] = (r, c)
+            coords = np.argwhere(pops[:, :, s] > 0)
+            if len(coords) > 0:
+                last_seen_tile[s] = (int(coords[-1, 0]), int(coords[-1, 1]))
 
         # Rolling pop history
         pop_history_window[s][generation % 100] = total
@@ -1218,18 +1256,20 @@ def _init_tectonics():
         sc = random.randint(1, GRID_SIZE - 2)
         seeds.append((sr, sc))
 
-    # Assign each tile to nearest seed (Voronoi)
+    # Assign each tile to nearest seed (Voronoi) — vectorized
+    rows_v = np.arange(GRID_SIZE)[:, None]
+    cols_v = np.arange(GRID_SIZE)[None, :]
+    min_dist = np.full((GRID_SIZE, GRID_SIZE), 999, dtype=np.int32)
+    closest = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    for i, (sr, sc) in enumerate(seeds):
+        d = np.abs(rows_v - sr) + np.abs(cols_v - sc)
+        better = d < min_dist
+        min_dist[better] = d[better]
+        closest[better] = i
     plate_tiles = [[] for _ in range(PLATE_COUNT)]
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            min_dist = 999
-            closest = 0
-            for i, (sr, sc) in enumerate(seeds):
-                d = abs(r - sr) + abs(c - sc)
-                if d < min_dist:
-                    min_dist = d
-                    closest = i
-            plate_tiles[closest].append((r, c))
+    for i in range(PLATE_COUNT):
+        coords = np.argwhere(closest == i)
+        plate_tiles[i] = [(int(r), int(c)) for r, c in coords]
 
     # Random drift directions
     drifts = [(0, 0)] * PLATE_COUNT
@@ -1248,23 +1288,28 @@ def _init_tectonics():
 
 def _get_plate_boundaries():
     """Find tiles at plate boundaries (adjacent to a different plate's tile)."""
-    boundaries = []
-    plate_map = {}
+    gs = GRID_SIZE
+    # Build plate ID map as numpy array
+    plate_id_map = np.full((gs, gs), -1, dtype=np.int32)
     for plate in tectonic_plates:
         for r, c in plate['tiles']:
-            plate_map[(r, c)] = plate['id']
+            plate_id_map[r, c] = plate['id']
 
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            pid = plate_map.get((r, c), -1)
-            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nr, nc = r+dr, c+dc
-                if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
-                    npid = plate_map.get((nr, nc), -1)
-                    if npid != pid and npid >= 0:
-                        boundaries.append((r, c, pid))
-                        break
-    return boundaries
+    # Check 4-neighbors via shifted arrays
+    padded = np.pad(plate_id_map, 1, mode='constant', constant_values=-1)
+    diff_up = plate_id_map != padded[:-2, 1:-1]
+    diff_down = plate_id_map != padded[2:, 1:-1]
+    diff_left = plate_id_map != padded[1:-1, :-2]
+    diff_right = plate_id_map != padded[1:-1, 2:]
+    # Neighbor must be a valid plate (not -1)
+    valid_up = padded[:-2, 1:-1] >= 0
+    valid_down = padded[2:, 1:-1] >= 0
+    valid_left = padded[1:-1, :-2] >= 0
+    valid_right = padded[1:-1, 2:] >= 0
+    is_boundary = ((diff_up & valid_up) | (diff_down & valid_down) |
+                   (diff_left & valid_left) | (diff_right & valid_right))
+    coords = np.argwhere(is_boundary)
+    return [(int(r), int(c), int(plate_id_map[r, c])) for r, c in coords]
 
 
 def _update_tectonics():
@@ -1395,15 +1440,7 @@ def step_simulation(n=1):
     for _ in range(n):
         generation += 1
         season = _season()
-        td = 0
-        for r in range(GRID_SIZE):
-            for c in range(GRID_SIZE):
-                td += _step_growth(r, c, season)
-                td += _step_predation(r, c)
-                td += _step_competition(r, c)
-                _step_vegetation(r, c, season)
-                _step_traits(r, c)
-        total_deaths_last = td
+        total_deaths_last = _step_all_tiles(season)
 
         # Environmental events
         _check_events(season)
