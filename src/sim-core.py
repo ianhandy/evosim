@@ -307,31 +307,32 @@ def _generate_terrain(seed_str):
         # Also push the transition zone below sea level where falloff is low
         grid -= (1 - falloff) * 0.08
 
-    # ── Crop to interesting region + resample to GRID_SIZE ──
-    # Find bounding box of everything above deep ocean
-    above_deep = grid > -0.03
-    if np.any(above_deep):
-        coords = np.argwhere(above_deep)
-        r_min, c_min = coords.min(axis=0)
-        r_max, c_max = coords.max(axis=0)
-        # Pad and make square
-        extent = max(r_max - r_min + 1, c_max - c_min + 1)
-        pad = max(2, int(extent * 0.08))
-        crop_size = extent + pad * 2
-        r_center = (r_min + r_max) // 2
-        c_center = (c_min + c_max) // 2
+    # ── Crop centered on land mass + resample to GRID_SIZE ──
+    # Use the land center of mass (already computed) as crop center.
+    # Size the crop so land fills roughly 60-70% of the final grid,
+    # leaving natural ocean around the edges from the radial falloff.
+    land_coords_crop = np.argwhere(grid > 0)
+    if len(land_coords_crop) > 0:
+        lr_min, lc_min = land_coords_crop.min(axis=0)
+        lr_max, lc_max = land_coords_crop.max(axis=0)
+        land_extent = max(lr_max - lr_min + 1, lc_max - lc_min + 1)
+        # Target: land occupies ~65% of the crop → crop = land / 0.65
+        crop_size = int(land_extent / 0.65)
+        crop_size = max(crop_size, gs)  # never smaller than output
+        # Center on land center of mass
+        r_center = (lr_min + lr_max) // 2
+        c_center = (lc_min + lc_max) // 2
     else:
         crop_size = igs
         r_center = igs // 2
         c_center = igs // 2
 
-    crop_r0 = max(0, r_center - crop_size // 2)
-    crop_c0 = max(0, c_center - crop_size // 2)
+    # Position crop window, clamped to canvas
+    half = crop_size // 2
+    crop_r0 = max(0, min(igs - crop_size, r_center - half))
+    crop_c0 = max(0, min(igs - crop_size, c_center - half))
     crop_r1 = min(igs, crop_r0 + crop_size)
     crop_c1 = min(igs, crop_c0 + crop_size)
-    # Adjust if clamped
-    crop_r0 = max(0, crop_r1 - crop_size)
-    crop_c0 = max(0, crop_c1 - crop_size)
     cropped = grid[crop_r0:crop_r1, crop_c0:crop_c1]
 
     # Resample to GRID_SIZE
@@ -439,6 +440,19 @@ def _generate_terrain(seed_str):
     elevations[:] = np.where(underwater,
         (raw_norm / max(0.001, zero_norm)) * 0.20,
         0.20 + (raw_norm - zero_norm) / max(0.001, 1 - zero_norm) * 0.80)
+
+    # ── Final edge falloff — guarantee ocean at all edges ──
+    # Smooth ramp: tiles within 2 cells of edge get pushed toward deep ocean.
+    # This catches any land that survived the radial falloff + crop.
+    edge_band = max(2, gs // 16)  # 2 tiles at 32, 4 at 64, 8 at 128
+    row_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
+    col_d = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1)).astype(np.float32)
+    edge_dist = np.minimum(row_d[:, None], col_d[None, :])
+    edge_factor = np.clip(edge_dist / edge_band, 0, 1)
+    # Smoothstep for natural transition
+    edge_factor = edge_factor * edge_factor * (3 - 2 * edge_factor)
+    # Push edge tiles toward deep water (elevation 0.05)
+    elevations[:] = elevations * edge_factor + 0.05 * (1 - edge_factor)
 
     _assign_biomes()
 
