@@ -49,6 +49,45 @@ const MAX_HISTORY = 300;
 const ghostData = {}; // species index → [{gen, pop}]
 let knownExtinctions = new Set();
 
+// ── Challenges & Achievements ──
+const CHALLENGES = [
+  { id: 'conservationist', name: 'The Conservationist', check: (gen, pops, s) => gen >= 3000 && pops.every(p => p > 0) && !s.anyExtinctBefore3k },
+  { id: 'diverger',        name: 'The Diverger',        check: (gen, pops, s) => s.speciationGen !== null && s.speciationGen <= 1000 },
+  { id: 'perfect',         name: 'Perfect Ecosystem',   check: (gen, pops, s) => gen >= 5000 && pops.every(p => p > 0) && !s.anyExtinct },
+  { id: 'resilience',      name: 'Resilience',          check: (gen, pops, s) => s.resilienceAchieved },
+  { id: 'speed',           name: 'Speed Observer',      check: (gen, pops, s) => gen >= 10000 },
+];
+
+const ACHIEVEMENTS_DEF = [
+  { id: 'first-run',        name: 'First Observation',  desc: 'Complete your first run' },
+  { id: 'first-extinction', name: 'First Extinction',   desc: 'Witness a species go extinct' },
+  { id: 'first-speciation', name: 'First Speciation',   desc: 'Witness a speciation event' },
+  { id: 'millennium',       name: 'Millennium',         desc: 'Reach generation 1,000' },
+  { id: 'deep-time',        name: 'Deep Time',          desc: 'Reach generation 5,000' },
+  { id: 'geological-scale', name: 'Geological Scale',   desc: 'Reach generation 10,000' },
+  { id: 'all-present-3k',   name: 'All Present',        desc: 'All 5 species alive at gen 3,000' },
+  { id: 'total-wipeout',    name: 'Total Wipeout',      desc: 'Every species goes extinct' },
+  { id: 'veteran',          name: 'Veteran Observer',   desc: 'Complete 5 or more observations' },
+  { id: 'comeback',         name: 'Against the Odds',   desc: 'A species recovers from near-extinction' },
+];
+
+let activeChallenge = -1; // -1 = free, 0–4 = challenge index
+let challengeState = resetChallengeState();
+let achievementToastQueue = [];
+let toastTimeout = null;
+let currentGen = 0;
+
+function resetChallengeState() {
+  return {
+    speciationGen: null,
+    resilienceAchieved: false,
+    resilienceLowPop: [false, false, false, false, false],
+    anyExtinct: false,
+    anyExtinctBefore3k: false,
+    allAliveAt3k: false,
+  };
+}
+
 // ── Seed utils ──
 function generateSeed() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -67,6 +106,14 @@ document.querySelectorAll('.size-btn').forEach(btn => {
     document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     gridSize = parseInt(btn.dataset.size);
+  });
+});
+
+document.querySelectorAll('.challenge-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.challenge-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeChallenge = parseInt(btn.dataset.challenge);
   });
 });
 
@@ -225,6 +272,15 @@ $('btn-begin').addEventListener('click', async () => {
     // Canvas 2D renderer (WebGL upgrade deferred until shader geometry is correct)
     mapRenderer = null;
 
+    // Show active challenge in header
+    const badge = $('challenge-badge');
+    if (activeChallenge >= 0) {
+      badge.textContent = CHALLENGES[activeChallenge].name;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
     resizeCanvases();
     startRenderLoop();
   } catch (err) {
@@ -234,6 +290,14 @@ $('btn-begin').addEventListener('click', async () => {
     console.error(err);
   }
 });
+
+// ── History button ──
+const btnHistory = $('btn-history');
+const hallOverlay = $('hall-overlay');
+if (JSON.parse(localStorage.getItem('evosim-hall') || '[]').length) btnHistory.style.display = '';
+btnHistory.addEventListener('click', () => { renderHall(); hallOverlay.classList.remove('hidden'); });
+$('hall-close').addEventListener('click', () => hallOverlay.classList.add('hidden'));
+hallOverlay.addEventListener('click', e => { if (e.target === hallOverlay) hallOverlay.classList.add('hidden'); });
 
 // ── Play/pause controls ──
 btnPlay.addEventListener('click', () => {
@@ -390,6 +454,16 @@ function startRenderLoop() {
           knownExtinctions.add(s);
           ghostData[s] = popHistory.filter(h => h.pops[s] > 0).map(h => ({ gen: h.gen, pop: h.pops[s] }));
         }
+      }
+
+      // ── Challenge state tracking ──
+      currentGen = Math.floor(gen);
+      if (knownExtinctions.size > 0) challengeState.anyExtinct = true;
+      if (currentGen < 3000 && knownExtinctions.size > 0) challengeState.anyExtinctBefore3k = true;
+      if (currentGen >= 3000 && !challengeState.allAliveAt3k && pops.every(p => p > 0)) challengeState.allAliveAt3k = true;
+      for (let s = 0; s < 5; s++) {
+        if (pops[s] > 0 && pops[s] < 50) challengeState.resilienceLowPop[s] = true;
+        if (challengeState.resilienceLowPop[s] && pops[s] > 500) challengeState.resilienceAchieved = true;
       }
 
       // Epoch display
@@ -1185,15 +1259,18 @@ function checkSimEvents() {
       showEulogy(evt.data);
     }
 
-    if (evt.type === 'speciation' && !DISCLOSED.has('first-speciation')) {
-      disclose('first-speciation',
-        'Speciation Detected',
-        `<p>A species has <strong>speciated</strong> — split into two genetically distinct populations. This is evolution's most dramatic outcome.</p>
+    if (evt.type === 'speciation') {
+      if (challengeState.speciationGen === null) challengeState.speciationGen = currentGen;
+      if (!DISCLOSED.has('first-speciation')) {
+        disclose('first-speciation',
+          'Speciation Detected',
+          `<p>A species has <strong>speciated</strong> — split into two genetically distinct populations. This is evolution's most dramatic outcome.</p>
 <p>Scientists measure this using <strong>FST (fixation index)</strong>, which quantifies genetic divergence between populations:</p>
 <p><code>FST = (Ht − Hs) / Ht</code></p>
 <p>Where Ht is total genetic variance and Hs is within-subpopulation variance. FST > 0.25 is considered very high divergence in real biology.</p>
 <p>In this simulation, speciation is detected when the species-specific trait diverges by more than 0.3 between northern and southern populations for 100+ consecutive generations.</p>`
-      );
+        );
+      }
     }
   }
 }
@@ -1271,6 +1348,23 @@ function showEndScreen() {
   }
   $('end-species-list').innerHTML = spHtml;
 
+  // Save run, check challenge, check achievements
+  saveRunToHall(gen, [...pops], seedInput.value);
+  btnHistory.style.display = '';
+
+  const resultEl = $('end-challenge-result');
+  if (activeChallenge >= 0) {
+    const passed = CHALLENGES[activeChallenge].check(gen, pops, challengeState);
+    resultEl.textContent = passed ? '★ CHALLENGE COMPLETE' : '✗ CHALLENGE FAILED';
+    resultEl.className = passed ? 'challenge-success' : 'challenge-fail';
+    resultEl.classList.remove('hidden');
+  } else {
+    resultEl.classList.add('hidden');
+  }
+
+  const newAchievements = checkAchievements(gen, [...pops]);
+  for (const ach of newAchievements) showAchievementToast(`Achievement: ${ach.name}`);
+
   endOverlay.classList.remove('hidden');
 }
 
@@ -1295,6 +1389,9 @@ $('end-new').addEventListener('click', () => {
   lastJournalCount = 0;
   lastEpochId = -1;
   mapRenderer = null;
+  challengeState = resetChallengeState();
+  currentGen = 0;
+  $('challenge-badge').classList.add('hidden');
   seedInput.value = generateSeed();
   renderPreview();
 });
@@ -1304,6 +1401,87 @@ function checkAllExtinct(pops) {
   if (pops.every(p => p === 0) && !observationEnded && sim.getGeneration() > 10) {
     showEndScreen();
   }
+}
+
+// ── Achievement & Hall helpers ──
+function checkAchievements(gen, pops) {
+  const hall = JSON.parse(localStorage.getItem('evosim-hall') || '[]');
+  const earned = new Set(JSON.parse(localStorage.getItem('evosim-achievements') || '[]'));
+  const newOnes = [];
+  function earn(id) {
+    if (!earned.has(id)) {
+      earned.add(id);
+      const def = ACHIEVEMENTS_DEF.find(a => a.id === id);
+      if (def) newOnes.push(def);
+    }
+  }
+  earn('first-run');
+  if (knownExtinctions.size > 0) earn('first-extinction');
+  if (challengeState.speciationGen !== null) earn('first-speciation');
+  if (gen >= 1000) earn('millennium');
+  if (gen >= 5000) earn('deep-time');
+  if (gen >= 10000) earn('geological-scale');
+  if (challengeState.allAliveAt3k) earn('all-present-3k');
+  if (pops.every(p => p === 0)) earn('total-wipeout');
+  if (hall.length >= 4) earn('veteran'); // 4 past runs + this one = 5
+  if (challengeState.resilienceAchieved) earn('comeback');
+  try { localStorage.setItem('evosim-achievements', JSON.stringify([...earned])); } catch {}
+  return newOnes;
+}
+
+function saveRunToHall(gen, pops, seed) {
+  const hall = JSON.parse(localStorage.getItem('evosim-hall') || '[]');
+  hall.unshift({
+    seed,
+    gen: Math.floor(gen),
+    alive: pops.filter(p => p > 0).length,
+    extinctions: knownExtinctions.size,
+    date: new Date().toLocaleDateString(),
+    challenge: activeChallenge >= 0 ? CHALLENGES[activeChallenge].id : null,
+  });
+  if (hall.length > 50) hall.pop();
+  try { localStorage.setItem('evosim-hall', JSON.stringify(hall)); } catch {}
+}
+
+function renderHall() {
+  const hall = JSON.parse(localStorage.getItem('evosim-hall') || '[]');
+  const list = $('hall-list');
+  if (!hall.length) {
+    list.innerHTML = '<div class="hall-empty">No observations recorded yet.</div>';
+    return;
+  }
+  list.innerHTML = hall.map((run, i) => {
+    const chName = run.challenge ? ` · ${CHALLENGES.find(c => c.id === run.challenge)?.name || run.challenge}` : '';
+    return `<div class="hall-entry">
+      <div class="hall-rank">#${i + 1}</div>
+      <div class="hall-info">
+        <div class="hall-seed">${run.seed}${chName}</div>
+        <div class="hall-meta">${run.date} · Gen ${run.gen.toLocaleString()} · ${run.alive}/5 alive · ${run.extinctions} extinctions</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function showAchievementToast(text) {
+  achievementToastQueue.push(text);
+  if (!toastTimeout) processToastQueue();
+}
+
+function processToastQueue() {
+  if (!achievementToastQueue.length) { toastTimeout = null; return; }
+  const text = achievementToastQueue.shift();
+  const toast = $('achievement-toast');
+  $('achievement-toast-text').textContent = text;
+  toast.classList.remove('hidden');
+  toast.classList.add('show');
+  toastTimeout = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => {
+      toast.classList.add('hidden');
+      toastTimeout = null;
+      processToastQueue();
+    }, 400);
+  }, 2500);
 }
 
 // ── Save/Load ──
