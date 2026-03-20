@@ -359,7 +359,7 @@ window.addEventListener('mousemove', e => {
 
   if (dragButton === 2 || e.shiftKey) {
     // Right-click or shift: tilt
-    camTilt = Math.max(0.2, Math.min(0.8, camTilt + dy * 0.004));
+    camTilt = Math.max(0.05, Math.min(0.8, camTilt + dy * 0.004));
   } else {
     // Left-click: pan
     camPanX += dx;

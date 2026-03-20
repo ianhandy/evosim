@@ -214,7 +214,12 @@ const VERT_SRC = `
     vec4 flowRaw = texture2D(u_flowDirs, texCoord);
     v_flowData = flowRaw * 255.0; // decode to 0-8 direction codes
 
-    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
+    // Depth: tiles further back (lower rRow+rCol) have higher z (further from camera)
+    // Also factor in elevation so tall tiles occlude correctly
+    float depth = (rRow + rCol) / (gs * 2.0) - renderElev * 0.1;
+    // Map to NDC z range [-1, 1], back=1 front=-1
+    float z = 1.0 - depth * 2.0;
+    gl_Position = vec4(pos.x, -pos.y, z, 1.0);
   }
 `;
 
@@ -459,6 +464,8 @@ export class MapRenderer {
     gl.clearColor(0.07, 0.03, 0, 1);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
 
     // ── Terrain program ──
     const vs = this._compileShader(gl.VERTEX_SHADER, VERT_SRC);
@@ -667,7 +674,7 @@ export class MapRenderer {
       this.canvas.height = ch * dpr;
     }
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const time = (performance.now() - this.startTime) / 1000;
 

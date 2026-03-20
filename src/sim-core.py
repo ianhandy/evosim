@@ -410,17 +410,17 @@ def _generate_terrain(seed_str):
                 pr, pc = int(pr), int(pc)
                 # Volcano radius and height scale with local elevation
                 local_elev = grid[pr, pc]
-                v_radius = rng.uniform(gs * 0.03, gs * 0.06)
-                v_height = rng.uniform(0.12, 0.25) * (0.5 + local_elev)
+                v_radius = rng.uniform(gs * 0.06, gs * 0.12)
+                v_height = rng.uniform(0.08, 0.18) * (0.5 + local_elev)
                 dist = np.sqrt((rows_v - pr) ** 2 + (cols_v - pc) ** 2).astype(np.float32)
                 in_cone = dist < v_radius
-                # Steep conical profile with slight concave summit (caldera hint)
+                # Smooth bell-shaped profile (gentler than squared falloff)
                 t = 1 - dist / v_radius
-                cone = v_height * t * t
+                cone = v_height * t * t * (3 - 2 * t)  # smoothstep profile
                 # Slight caldera depression at the very peak
-                caldera_r = v_radius * 0.15
+                caldera_r = v_radius * 0.2
                 caldera_dip = np.where(dist < caldera_r,
-                    v_height * 0.15 * (1 - dist / caldera_r), 0)
+                    v_height * 0.1 * (1 - dist / caldera_r), 0)
                 grid += np.where(in_cone, cone - caldera_dip, 0)
                 # Mark the summit tile as volcanic
                 if 0 <= pr < gs and 0 <= pc < gs:
