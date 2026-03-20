@@ -25,9 +25,9 @@ const VERT_SRC = `
   uniform float u_zoom;
   uniform vec2 u_pan;
   uniform float u_heightScale;
-  uniform float u_rotation;
-  uniform float u_minElev;        // global minimum elevation for pillar base
-  uniform float u_time;           // for water animation
+  uniform float u_rotSteps;       // 0,1,2,3 = 0,90,180,270 degrees
+  uniform float u_minElev;
+  uniform float u_time;
 
   uniform sampler2D u_elevations;
   uniform sampler2D u_biomes;
@@ -40,15 +40,24 @@ const VERT_SRC = `
   varying float v_faceType;
   varying float v_dither;
   varying vec4 v_popColor;
-  varying float v_pillarT;        // 0=top of pillar, 1=bottom — for gradient
+  varying float v_pillarT;
 
   void main() {
     float gs = u_gridSize;
     float row = floor(a_tileIdx / gs);
     float col = a_tileIdx - row * gs;
 
+    // ── 90° grid rotation by remapping tile position ──
+    // Data stays the same (texCoord unchanged), position rotates
+    float rRow = row, rCol = col;
+    int rot = int(u_rotSteps);
+    if (rot == 1)      { rRow = col;          rCol = gs - 1.0 - row; }
+    else if (rot == 2) { rRow = gs - 1.0 - row; rCol = gs - 1.0 - col; }
+    else if (rot == 3) { rRow = gs - 1.0 - col; rCol = row; }
+
     v_dither = fract(sin(row * 127.1 + col * 311.7) * 43758.5453);
 
+    // texCoord reads original tile data (not rotated)
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
@@ -56,36 +65,37 @@ const VERT_SRC = `
 
     float WATER_LEVEL = 0.20;
 
-    // Isometric projection
+    // Isometric projection using rotated position
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
-    float ix = (col - row) * tileW * 0.5;
-    float iy = (col + row) * tileH * 0.5;
+    float ix = (rCol - rRow) * tileW * 0.5;
+    float iy = (rCol + rRow) * tileH * 0.5;
 
-    // ── Per-corner elevation: average with neighbors for smooth slopes ──
-    // Diamond corners: top(0,0), right(1,0), bottom(1,1), left(0,1)
-    // Each corner is shared by 4 grid cells — average their elevations
+    // ── Per-corner elevation for smooth slopes ──
+    // Blend center with direct neighbors only (not diagonals) — gentler slopes
     float texel = 1.0 / gs;
-    // Sample neighbors (clamped at edges via CLAMP_TO_EDGE)
-    float eN  = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;  // row-1
-    float eS  = texture2D(u_elevations, texCoord + vec2(0.0,  texel)).r;  // row+1
-    float eW  = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;  // col-1
-    float eE  = texture2D(u_elevations, texCoord + vec2( texel, 0.0)).r;  // col+1
-    float eNW = texture2D(u_elevations, texCoord + vec2(-texel, -texel)).r;
-    float eNE = texture2D(u_elevations, texCoord + vec2( texel, -texel)).r;
-    float eSW = texture2D(u_elevations, texCoord + vec2(-texel,  texel)).r;
-    float eSE = texture2D(u_elevations, texCoord + vec2( texel,  texel)).r;
+    float eN = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
+    float eS = texture2D(u_elevations, texCoord + vec2(0.0,  texel)).r;
+    float eW = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
+    float eE = texture2D(u_elevations, texCoord + vec2( texel, 0.0)).r;
 
-    // Corner elevations (average of 4 tiles sharing each vertex)
-    float eTop    = (elev + eN + eW + eNW) * 0.25;  // top corner
-    float eRight  = (elev + eN + eE + eNE) * 0.25;  // right corner
-    float eBottom = (elev + eS + eE + eSE) * 0.25;  // bottom corner
-    float eLeft   = (elev + eS + eW + eSW) * 0.25;  // left corner
+    // Corner = 50% center + 50% average of 2 adjacent neighbors
+    // Clamped so corners never deviate more than 0.08 from center
+    float maxDev = 0.08;
+    float eTop    = clamp((eN + eW) * 0.5, elev - maxDev, elev + maxDev);
+    float eRight  = clamp((eN + eE) * 0.5, elev - maxDev, elev + maxDev);
+    float eBottom = clamp((eS + eE) * 0.5, elev - maxDev, elev + maxDev);
+    float eLeft   = clamp((eS + eW) * 0.5, elev - maxDev, elev + maxDev);
 
-    // Per-vertex elevation based on which quad corner this vertex is at
-    // Bilinear interpolation across the quad using a_quad
+    // Blend: 60% center elevation + 40% corner for gentle slopes
+    eTop    = mix(elev, eTop,    0.4);
+    eRight  = mix(elev, eRight,  0.4);
+    eBottom = mix(elev, eBottom, 0.4);
+    eLeft   = mix(elev, eLeft,   0.4);
+
+    // Per-vertex elevation via bilinear interpolation
     float cornerElev = mix(
       mix(eTop, eRight, a_quad.x),
       mix(eLeft, eBottom, a_quad.x),
@@ -97,42 +107,36 @@ const VERT_SRC = `
     float surfaceIz = elev * hScale;
     float cornerIz = cornerElev * hScale;
     float floorIz = floorElev * hScale;
-    float pillarH = max(0.0, surfaceIz - floorIz);
 
-    // Water surface at sea level
     float waterIz = WATER_LEVEL * hScale;
 
     vec2 pos;
     v_pillarT = 0.0;
 
     if (a_faceType < 0.5) {
-      // Face 0: terrain top — sloped diamond using per-corner elevations
+      // Face 0: terrain top — gently sloped
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
       pos.y = iy - cornerIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
-      // Face 1: right side pillar
-      // Top edge matches the right side of the sloped top face
-      // qy=0 → right corner, qy=1 → bottom corner
-      float topCornerElev = mix(eRight, eBottom, a_quad.y);
-      float topIz = topCornerElev * hScale;
-      float topY = iy - topIz;
+      // Face 1: right side pillar (top edge: right→bottom corners)
+      float topElev = mix(eRight, eBottom, a_quad.y);
+      float topIz = topElev * hScale;
       pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * (topIz - floorIz);
+      float topY = iy - topIz + a_quad.y * tileH * 0.5;
+      pos.y = topY + a_quad.x * max(0.0, topIz - floorIz);
       v_pillarT = a_quad.x;
     } else if (a_faceType < 2.5) {
-      // Face 2: left side pillar
-      // Top edge matches the left side of the sloped top face
-      // qy=0 → bottom corner, qy=1 → left corner
-      float topCornerElev = mix(eBottom, eLeft, a_quad.y);
-      float topIz = topCornerElev * hScale;
-      float topY = iy - topIz;
+      // Face 2: left side pillar (top edge: bottom→left corners)
+      float topElev = mix(eBottom, eLeft, a_quad.y);
+      float topIz = topElev * hScale;
       pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * (topIz - floorIz);
+      float topY = iy - topIz + a_quad.y * tileH * 0.5;
+      pos.y = topY + a_quad.x * max(0.0, topIz - floorIz);
       v_pillarT = a_quad.x;
     } else {
-      // Face 3: water surface diamond
+      // Face 3: water surface
       float wave = sin(u_time * 1.5 + row * 0.7 + col * 1.1) * 0.003 * hScale;
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
@@ -140,34 +144,24 @@ const VERT_SRC = `
       pos.y = iy - waterIz - wave + localY * tileH * 0.5;
     }
 
-    // Screen-space rotation
-    float cosR = cos(u_rotation);
-    float sinR = sin(u_rotation);
-    vec2 rotated = vec2(
-      pos.x * cosR - pos.y * sinR,
-      pos.x * sinR + pos.y * cosR
-    );
-    rotated.x += u_pan.x / u_resolution.x * 2.0;
-    rotated.y += u_pan.y / u_resolution.y * 2.0;
+    // Pan
+    pos.x += u_pan.x / u_resolution.x * 2.0;
+    pos.y += u_pan.y / u_resolution.y * 2.0;
 
-    // Shading
+    // Hillshade for top faces
     if (a_faceType < 0.5) {
-      // Hillshade from neighbor elevations
-      float texel = 1.0 / gs;
-      float hL = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
-      float hU = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
-      v_shade = 0.5 + 0.5 * clamp(0.5 + (elev - hL) * 2.5 + (elev - hU) * 2.0, 0.0, 1.0);
+      v_shade = 0.5 + 0.5 * clamp(0.5 + (elev - eW) * 2.5 + (elev - eN) * 2.0, 0.0, 1.0);
     } else if (a_faceType < 2.5) {
       v_shade = a_faceType < 1.5 ? 0.45 : 0.3;
     } else {
-      v_shade = 1.0; // water surface — shaded in fragment
+      v_shade = 1.0;
     }
 
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
 
-    gl_Position = vec4(rotated.x, -rotated.y, 0.0, 1.0);
+    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
   }
 `;
 
@@ -264,7 +258,7 @@ const RIVER_VERT_SRC = `
   uniform float u_zoom;
   uniform vec2 u_pan;
   uniform float u_heightScale;
-  uniform float u_rotation;
+  uniform float u_rotSteps;
   uniform sampler2D u_elevations;
 
   varying float v_alpha;
@@ -274,6 +268,13 @@ const RIVER_VERT_SRC = `
     float row = a_pos.x;
     float col = a_pos.y;
 
+    // Grid rotation
+    float rRow = row, rCol = col;
+    int rot = int(u_rotSteps);
+    if (rot == 1)      { rRow = col;          rCol = gs - 1.0 - row; }
+    else if (rot == 2) { rRow = gs - 1.0 - row; rCol = gs - 1.0 - col; }
+    else if (rot == 3) { rRow = gs - 1.0 - col; rCol = row; }
+
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
@@ -281,22 +282,15 @@ const RIVER_VERT_SRC = `
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
-    float ix = (col - row) * tileW * 0.5;
-    float iy = (col + row) * tileH * 0.5;
+    float ix = (rCol - rRow) * tileW * 0.5;
+    float iy = (rCol + rRow) * tileH * 0.5;
     float iz = elev * hScale;
 
     vec2 pos = vec2(ix, iy - iz);
+    pos.x += u_pan.x / u_resolution.x * 2.0;
+    pos.y += u_pan.y / u_resolution.y * 2.0;
 
-    float cosR = cos(u_rotation);
-    float sinR = sin(u_rotation);
-    vec2 rotated = vec2(
-      pos.x * cosR - pos.y * sinR,
-      pos.x * sinR + pos.y * cosR
-    );
-    rotated.x += u_pan.x / u_resolution.x * 2.0;
-    rotated.y += u_pan.y / u_resolution.y * 2.0;
-
-    gl_Position = vec4(rotated.x, -rotated.y, 0.0, 1.0);
+    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
     gl_PointSize = max(2.0, a_width * u_zoom * 3.0);
     v_alpha = 0.7;
   }
@@ -368,7 +362,7 @@ export class MapRenderer {
       u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
       u_pan: gl.getUniformLocation(this.program, 'u_pan'),
       u_heightScale: gl.getUniformLocation(this.program, 'u_heightScale'),
-      u_rotation: gl.getUniformLocation(this.program, 'u_rotation'),
+      u_rotSteps: gl.getUniformLocation(this.program, 'u_rotSteps'),
       u_minElev: gl.getUniformLocation(this.program, 'u_minElev'),
       u_time: gl.getUniformLocation(this.program, 'u_time'),
       u_elevations: gl.getUniformLocation(this.program, 'u_elevations'),
@@ -396,7 +390,7 @@ export class MapRenderer {
           u_zoom: gl.getUniformLocation(this.riverProgram, 'u_zoom'),
           u_pan: gl.getUniformLocation(this.riverProgram, 'u_pan'),
           u_heightScale: gl.getUniformLocation(this.riverProgram, 'u_heightScale'),
-          u_rotation: gl.getUniformLocation(this.riverProgram, 'u_rotation'),
+          u_rotSteps: gl.getUniformLocation(this.riverProgram, 'u_rotSteps'),
           u_elevations: gl.getUniformLocation(this.riverProgram, 'u_elevations'),
         };
         this.riverPosBuf = gl.createBuffer();
@@ -587,7 +581,7 @@ export class MapRenderer {
     gl.uniform1f(this.locs.u_zoom, camera.zoom);
     gl.uniform2f(this.locs.u_pan, camera.panX, camera.panY);
     gl.uniform1f(this.locs.u_heightScale, 160);
-    gl.uniform1f(this.locs.u_rotation, camera.rotation || 0);
+    gl.uniform1f(this.locs.u_rotSteps, camera.rotSteps || 0);
     gl.uniform1f(this.locs.u_minElev, this.minElev);
     gl.uniform1f(this.locs.u_time, time);
     gl.uniform1f(this.locs.u_popMode, this.popMode ? 1.0 : 0.0);
@@ -639,7 +633,7 @@ export class MapRenderer {
       gl.uniform1f(this.riverLocs.u_zoom, camera.zoom);
       gl.uniform2f(this.riverLocs.u_pan, camera.panX, camera.panY);
       gl.uniform1f(this.riverLocs.u_heightScale, 160);
-      gl.uniform1f(this.riverLocs.u_rotation, camera.rotation || 0);
+      gl.uniform1f(this.riverLocs.u_rotSteps, camera.rotSteps || 0);
       gl.uniform1i(this.riverLocs.u_elevations, 0);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.riverPosBuf);

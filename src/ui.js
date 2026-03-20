@@ -36,7 +36,7 @@ let camTilt = 0.5;   // 0.2 (flat) to 0.8 (steep)
 let camZoom = 1.0;
 let camPanX = 0;
 let camPanY = 0;
-let camRotation = 0; // radians, snaps to 45° increments
+let camRotation = 0; // 0-3 = 0°, 90°, 180°, 270°
 let isDragging = false;
 let dragButton = -1;
 let dragLastX = 0;
@@ -399,14 +399,13 @@ mapCanvas.addEventListener('dblclick', () => {
   camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
 });
 
-// Q/E to rotate, P to toggle population overlay
+// Q/E to rotate 90°, P to toggle population overlay
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  const step = Math.PI / 4;
   if (e.key === 'q' || e.key === 'Q') {
-    camRotation -= step;
+    camRotation = (camRotation + 3) % 4; // rotate left 90°
   } else if (e.key === 'e' || e.key === 'E') {
-    camRotation += step;
+    camRotation = (camRotation + 1) % 4; // rotate right 90°
   } else if (e.key === 'p' || e.key === 'P') {
     if (mapRenderer) {
       mapRenderer.popMode = !mapRenderer.popMode;
@@ -536,7 +535,7 @@ function startRenderLoop() {
       mapRenderer.updateData(views.elevations, views.biomes, views.populations, specRGB);
       mapRenderer.updateRivers(views.riverPaths, views.riverMeta);
       mapRenderer.render(
-        { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotation: camRotation },
+        { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotSteps: camRotation },
         getBiomeColors()
       );
     } else {
