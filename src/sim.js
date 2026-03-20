@@ -209,7 +209,7 @@ export function start(speed = 1) {
   simRunning = true;
   views.globals[GLOBAL.PAUSED] = 0;
   if (tickInterval) clearInterval(tickInterval);
-  tickInterval = setInterval(step, 50);
+  tickInterval = setInterval(step, 500);
 }
 
 export function pause() {
@@ -228,7 +228,7 @@ export function setSpeed(speed) {
   views.globals[GLOBAL.SIM_SPEED] = speed;
   if (simRunning) {
     clearInterval(tickInterval);
-    tickInterval = setInterval(step, 50);
+    tickInterval = setInterval(step, 500);
   }
 }
 
