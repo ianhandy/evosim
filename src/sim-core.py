@@ -461,15 +461,33 @@ def _generate_terrain(seed_str):
 
 
 def _update_biomes_incremental():
-    """Lightweight biome update — only water/land boundaries. Preserves forest/beach."""
+    """
+    Lightweight biome update — only handles clear-cut transitions.
+    Preserves forest/beach assignments. Never re-randomizes.
+    """
     SEA_LEVEL = 0.20
-    sunk = (biomes >= 2) & (elevations < SEA_LEVEL)
-    biomes[sunk] = BIOME_SHALLOW_MARSH
-    biomes[(elevations < 0.08)] = BIOME_DEEP_WATER
+    gs = GRID_SIZE
+
+    # Only submerge land tiles that are significantly below water AND
+    # adjacent to existing water. Prevents inland forest from drowning
+    # during temporary elevation dips (tidal surge, etc.)
+    is_water = (biomes <= 1)
+    padded = np.pad(is_water.astype(np.float32), 1, mode='constant', constant_values=1)
+    water_adj = (padded[:-2, 1:-1] + padded[2:, 1:-1] +
+                 padded[1:-1, :-2] + padded[1:-1, 2:]) > 0
+
+    # Land tiles that sank well below water AND are next to water → submerge
+    deep_sunk = (biomes >= 2) & (elevations < SEA_LEVEL - 0.02) & water_adj
+    biomes[deep_sunk] = BIOME_SHALLOW_MARSH
+
+    # Very deep stays deep
+    biomes[elevations < 0.08] = BIOME_DEEP_WATER
+
+    # Water tiles that rose above land → become beach
     rose = (biomes <= 1) & (elevations >= SEA_LEVEL)
     biomes[rose] = BIOME_TIDAL_FLATS
-    dying_forest = (biomes == BIOME_REED_BEDS) & (vegetation < 0.1)
-    biomes[dying_forest] = BIOME_TIDAL_FLATS
+
+    # Volcanic summit tiles → rocky
     volcanic = (tile_flags & 2) > 0
     biomes[volcanic & (elevations >= SEA_LEVEL)] = BIOME_ROCKY_SHORE
 
@@ -1613,81 +1631,115 @@ def _volcanic_eruption(plate):
 
 
 # ── LAVA FLOWS ───────────────────────────────────────────────────────────────
-# Lava flows use the same path-following logic as rivers:
-# spawn at a high point, flow downhill, deposit elevation at terminus.
-# When lava hits water or runs out of slope, it solidifies and raises terrain.
+# Lava advances progressively — one tile at a time, like rivers.
+# It destroys vegetation and life along its path, deposits elevation
+# everywhere it flows, converts biomes to rocky, and creates new land
+# when it reaches water.
 
-lava_flows = []    # list of lava dicts (same structure as rivers)
+lava_flows = []
 _next_lava_id = 0
 
-LAVA_DEPOSIT = 0.001    # elevation gain per tick at flow terminus
-LAVA_COOLING_RATE = 50   # generations until a lava flow solidifies
-LAVA_MAX_LENGTH = 20     # max path length
+LAVA_DEPOSIT_PATH = 0.003  # elevation thickening along existing path per advance
+LAVA_DEPOSIT_TIP = 0.008   # elevation deposited at the advancing front
+LAVA_COOLING_RATE = 80     # generations until lava solidifies
+LAVA_ADVANCE_INTERVAL = 3  # advance one tile every N generations
+LAVA_MAX_PATH = 30         # max tiles a flow can reach
 
 
 def _spawn_lava_flow(vr, vc):
-    """Create a lava flow originating at an eruption site. Traces downhill."""
+    """Create a lava flow at eruption site. Only the origin — advances over time."""
     global _next_lava_id
-    path = [(vr, vc)]
-    path_set = {(vr, vc)}
-    r, c = vr, vc
-
-    # Trace downhill greedily, like river advancement
-    for _ in range(LAVA_MAX_LENGTH):
-        best = None
-        best_elev = elevations[r, c]
-        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE and (nr, nc) not in path_set:
-                e = elevations[nr, nc]
-                if e < best_elev:
-                    best = (nr, nc)
-                    best_elev = e
-        if best is None:
-            break
-        r, c = best
-        path.append((r, c))
-        path_set.add((r, c))
-        # Stop if we hit water
-        if elevations[r, c] < 0.20:
-            break
-
-    if len(path) < 2:
-        return
-
     lava = {
         'id': _next_lava_id,
-        'path': path,
+        'path': [(vr, vc)],
+        'path_set': {(vr, vc)},
         'age': 0,
         'width': 2,
         'active': True,
+        'stalled': 0,
     }
     _next_lava_id += 1
+    tile_flags[vr, vc] |= 2
     lava_flows.append(lava)
 
 
+def _advance_lava(lava):
+    """Extend lava one tile downhill. Destroys everything in its path."""
+    if not lava['active']:
+        return
+    r, c = lava['path'][-1]
+
+    # Find lowest neighbor not already in the flow (8-directional)
+    best = None
+    best_elev = elevations[r, c]
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE and (nr, nc) not in lava['path_set']:
+            e = elevations[nr, nc]
+            if e < best_elev:
+                best = (nr, nc)
+                best_elev = e
+
+    if best is None:
+        # Nowhere downhill — lava pools, builds up slowly
+        lava['stalled'] += 1
+        elevations[r, c] = min(1.0, elevations[r, c] + LAVA_DEPOSIT_TIP * 0.5)
+        if lava['stalled'] > 10:
+            lava['active'] = False
+        return
+
+    lava['stalled'] = 0
+    nr, nc = best
+
+    # Lava-water interaction: create new land
+    if elevations[nr, nc] < 0.20:
+        elevations[nr, nc] = 0.22
+        biomes[nr, nc] = BIOME_ROCKY_SHORE
+        events_buffer.append({'gen': generation, 'type': 'lava_land',
+            'text': f'Gen {generation}. Lava meets sea at ({nr},{nc}). New rock forms.'})
+
+    # Deposit elevation at the new tile
+    elevations[nr, nc] = min(1.0, elevations[nr, nc] + LAVA_DEPOSIT_TIP)
+
+    # Destroy vegetation and life on the new tile
+    vegetation[nr, nc] = 0
+    for s in range(NUM_SPECIES):
+        pops[nr, nc, s] = 0
+
+    # Convert to rocky and flag as volcanic
+    biomes[nr, nc] = BIOME_ROCKY_SHORE
+    tile_flags[nr, nc] |= 2
+
+    # Extend path
+    lava['path'].append((nr, nc))
+    lava['path_set'].add((nr, nc))
+
+    # Thicken existing path slightly (lava deposits as it flows)
+    for pr, pc in lava['path'][:-1]:
+        if 0 <= pr < GRID_SIZE and 0 <= pc < GRID_SIZE:
+            elevations[pr, pc] = min(1.0, elevations[pr, pc] + LAVA_DEPOSIT_PATH * 0.1)
+
+
 def _step_lava_flows():
-    """Age lava flows: deposit elevation at terminus, solidify when cooled."""
-    expired = []
+    """Advance and age all active lava flows. Called every generation."""
     for lava in lava_flows:
         if not lava['active']:
             continue
         lava['age'] += 1
 
-        # Deposit elevation at the flow terminus (and last few tiles)
-        path = lava['path']
-        deposit_tiles = path[-3:]  # last 3 tiles get deposit
-        for r, c in deposit_tiles:
-            if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
-                elevations[r, c] = min(1.0, elevations[r, c] + LAVA_DEPOSIT)
+        # Advance one tile periodically
+        if lava['age'] % LAVA_ADVANCE_INTERVAL == 0:
+            _advance_lava(lava)
 
-        # Cool and solidify
+        # Max length cap
+        if len(lava['path']) >= LAVA_MAX_PATH:
+            lava['active'] = False
+
+        # Solidify after cooling
         if lava['age'] > LAVA_COOLING_RATE:
             lava['active'] = False
-            # Reclassify biomes where lava deposited
-            _update_biomes_incremental()
 
-    # Remove very old inactive flows (keep last 5 for rendering)
+    # Clean up old inactive flows (keep last 5 for rendering)
     inactive = [lf for lf in lava_flows if not lf['active']]
     if len(inactive) > 5:
         for old in inactive[:-5]:
