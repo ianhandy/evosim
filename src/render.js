@@ -55,7 +55,6 @@ const VERT_SRC = `
     v_popColor = u_popMode > 0.5 ? texture2D(u_popTex, texCoord) : vec4(0.0);
 
     float WATER_LEVEL = 0.20;
-    bool isWater = elev < WATER_LEVEL;
 
     // Isometric projection
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
@@ -65,39 +64,75 @@ const VERT_SRC = `
     float ix = (col - row) * tileW * 0.5;
     float iy = (col + row) * tileH * 0.5;
 
-    // Pillar extends from tile surface down to the global minimum
-    float floorElev = max(0.0, u_minElev - 0.02); // slightly below deepest
-    float surfaceIz = elev * hScale;
-    float floorIz = floorElev * hScale;
-    float pillarH = max(0.0, (surfaceIz - floorIz));
+    // ── Per-corner elevation: average with neighbors for smooth slopes ──
+    // Diamond corners: top(0,0), right(1,0), bottom(1,1), left(0,1)
+    // Each corner is shared by 4 grid cells — average their elevations
+    float texel = 1.0 / gs;
+    // Sample neighbors (clamped at edges via CLAMP_TO_EDGE)
+    float eN  = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;  // row-1
+    float eS  = texture2D(u_elevations, texCoord + vec2(0.0,  texel)).r;  // row+1
+    float eW  = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;  // col-1
+    float eE  = texture2D(u_elevations, texCoord + vec2( texel, 0.0)).r;  // col+1
+    float eNW = texture2D(u_elevations, texCoord + vec2(-texel, -texel)).r;
+    float eNE = texture2D(u_elevations, texCoord + vec2( texel, -texel)).r;
+    float eSW = texture2D(u_elevations, texCoord + vec2(-texel,  texel)).r;
+    float eSE = texture2D(u_elevations, texCoord + vec2( texel,  texel)).r;
 
-    // Water surface sits at sea level
+    // Corner elevations (average of 4 tiles sharing each vertex)
+    float eTop    = (elev + eN + eW + eNW) * 0.25;  // top corner
+    float eRight  = (elev + eN + eE + eNE) * 0.25;  // right corner
+    float eBottom = (elev + eS + eE + eSE) * 0.25;  // bottom corner
+    float eLeft   = (elev + eS + eW + eSW) * 0.25;  // left corner
+
+    // Per-vertex elevation based on which quad corner this vertex is at
+    // Bilinear interpolation across the quad using a_quad
+    float cornerElev = mix(
+      mix(eTop, eRight, a_quad.x),
+      mix(eLeft, eBottom, a_quad.x),
+      a_quad.y
+    );
+
+    // Pillar from surface to global minimum
+    float floorElev = max(0.0, u_minElev - 0.02);
+    float surfaceIz = elev * hScale;
+    float cornerIz = cornerElev * hScale;
+    float floorIz = floorElev * hScale;
+    float pillarH = max(0.0, surfaceIz - floorIz);
+
+    // Water surface at sea level
     float waterIz = WATER_LEVEL * hScale;
 
     vec2 pos;
     v_pillarT = 0.0;
 
     if (a_faceType < 0.5) {
-      // Face 0: terrain top diamond (at actual elevation — shows seafloor)
+      // Face 0: terrain top — sloped diamond using per-corner elevations
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
       pos.x = ix + localX * tileW * 0.5;
-      pos.y = iy - surfaceIz + localY * tileH * 0.5;
+      pos.y = iy - cornerIz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
       // Face 1: right side pillar
-      float topY = iy - surfaceIz;
+      // Top edge matches the right side of the sloped top face
+      // qy=0 → right corner, qy=1 → bottom corner
+      float topCornerElev = mix(eRight, eBottom, a_quad.y);
+      float topIz = topCornerElev * hScale;
+      float topY = iy - topIz;
       pos.x = ix + (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
+      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * (topIz - floorIz);
       v_pillarT = a_quad.x;
     } else if (a_faceType < 2.5) {
       // Face 2: left side pillar
-      float topY = iy - surfaceIz;
+      // Top edge matches the left side of the sloped top face
+      // qy=0 → bottom corner, qy=1 → left corner
+      float topCornerElev = mix(eBottom, eLeft, a_quad.y);
+      float topIz = topCornerElev * hScale;
+      float topY = iy - topIz;
       pos.x = ix - (1.0 - a_quad.y) * tileW * 0.5;
-      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * pillarH;
+      pos.y = topY + a_quad.y * tileH * 0.5 + a_quad.x * (topIz - floorIz);
       v_pillarT = a_quad.x;
     } else {
-      // Face 3: water surface diamond (only meaningful for water tiles)
-      // Subtle wave offset per tile
+      // Face 3: water surface diamond
       float wave = sin(u_time * 1.5 + row * 0.7 + col * 1.1) * 0.003 * hScale;
       float localX = (a_quad.x - a_quad.y);
       float localY = (a_quad.x + a_quad.y - 1.0);
@@ -551,7 +586,7 @@ export class MapRenderer {
     gl.uniform1f(this.locs.u_tilt, camera.tilt);
     gl.uniform1f(this.locs.u_zoom, camera.zoom);
     gl.uniform2f(this.locs.u_pan, camera.panX, camera.panY);
-    gl.uniform1f(this.locs.u_heightScale, 80);
+    gl.uniform1f(this.locs.u_heightScale, 160);
     gl.uniform1f(this.locs.u_rotation, camera.rotation || 0);
     gl.uniform1f(this.locs.u_minElev, this.minElev);
     gl.uniform1f(this.locs.u_time, time);
@@ -603,7 +638,7 @@ export class MapRenderer {
       gl.uniform1f(this.riverLocs.u_tilt, camera.tilt);
       gl.uniform1f(this.riverLocs.u_zoom, camera.zoom);
       gl.uniform2f(this.riverLocs.u_pan, camera.panX, camera.panY);
-      gl.uniform1f(this.riverLocs.u_heightScale, 80);
+      gl.uniform1f(this.riverLocs.u_heightScale, 160);
       gl.uniform1f(this.riverLocs.u_rotation, camera.rotation || 0);
       gl.uniform1i(this.riverLocs.u_elevations, 0);
 
