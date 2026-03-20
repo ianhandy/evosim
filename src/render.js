@@ -21,6 +21,7 @@ const VERT_SRC = `
   uniform float u_zoom;
   uniform vec2 u_pan;
   uniform float u_heightScale;
+  uniform float u_rotation;       // radians, 0 = default iso view
 
   uniform sampler2D u_elevations;  // elevation data as texture
   uniform sampler2D u_biomes;      // biome data as texture
@@ -44,33 +45,61 @@ const VERT_SRC = `
     vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
-    // Isometric projection
+    // Rotate grid position around center before isometric projection
+    float center = (gs - 1.0) * 0.5;
+    float cr = row - center;
+    float cc = col - center;
+    float cosR = cos(u_rotation);
+    float sinR = sin(u_rotation);
+    float rRow = cr * cosR - cc * sinR;
+    float rCol = cr * sinR + cc * cosR;
+
+    // Isometric projection on rotated coordinates
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
     float tileH = tileW * u_tilt;
     float hScale = u_heightScale * u_zoom / u_resolution.y * 2.0;
 
-    float ix = (col - row) * tileW * 0.5;
-    float iy = (col + row) * tileH * 0.5;
+    float ix = (rCol - rRow) * tileW * 0.5;
+    float iy = (rCol + rRow) * tileH * 0.5;
     float iz = elev * hScale;
 
-    // Deep baseline for pillars
-    float deepBase = gs * tileH * 0.5 + hScale * 0.5;
+    // Deep baseline for pillars — use max possible iy
+    float maxExtent = gs * 0.7072; // sqrt(2)/2 * gs for rotated diagonal
+    float deepBase = maxExtent * tileH * 0.5 + hScale * 0.5;
     float pillarH = deepBase - (iy - iz + tileH * 0.5);
     pillarH = max(0.0, pillarH);
+
+    // Rotated tile axes for diamond/side faces
+    // The diamond top face needs its local axes rotated too
+    float dxR = cosR * tileW * 0.5;   // rotated tile-right in screen X
+    float dyR = sinR * tileW * 0.5;
+    float dxU = -sinR * tileH * 0.5;  // rotated tile-up in screen Y
+    float dyU = cosR * tileH * 0.5;
+
+    // Side face visibility: which two sides face the camera depends on rotation
+    // At rotation=0: right (faceType=1) and left (faceType=2) are visible
+    // As rotation changes, different sides become visible/hidden
+    // For 45° snaps, we pick the two camera-facing sides
+    float rotNorm = mod(u_rotation, 6.28318);
+    // Side shading based on which face catches light relative to rotation
+    float rightShade = 0.45 - 0.15 * sin(u_rotation);
+    float leftShade = 0.30 + 0.15 * sin(u_rotation);
 
     vec2 pos;
     if (a_faceType < 0.5) {
       // Top face diamond
       float qx = a_quad.x;
       float qy = a_quad.y;
-      // Map unit quad to diamond: 4 vertices
-      // 0,0 → top  |  1,0 → right  |  1,1 → bottom  |  0,1 → left
-      pos.x = ix + (qx - qy) * tileW * 0.5;
-      pos.y = iy - iz + (qx + qy - 1.0) * tileH * 0.5;
+      // Diamond: iso-right = (tileW/2, tileH/2), iso-down = (-tileW/2, tileH/2)
+      // After rotation these become rotated versions
+      float localX = (qx - qy);  // -1 to 1 across diamond
+      float localY = (qx + qy - 1.0);  // -1 to 1 across diamond
+      pos.x = ix + localX * tileW * 0.5;
+      pos.y = iy - iz + localY * tileH * 0.5;
     } else if (a_faceType < 1.5) {
-      // Right side face (quad from right point down)
-      float qx = a_quad.x; // 0=top edge, 1=bottom edge
-      float qy = a_quad.y; // 0=right point, 1=bottom point
+      // Right side face
+      float qx = a_quad.x;
+      float qy = a_quad.y;
       float topY = iy - iz;
       pos.x = ix + (1.0 - qy) * tileW * 0.5;
       pos.y = topY + qy * tileH * 0.5 + qx * pillarH;
@@ -87,8 +116,8 @@ const VERT_SRC = `
     pos.x += u_pan.x / u_resolution.x * 2.0;
     pos.y += u_pan.y / u_resolution.y * 2.0;
 
-    // Shading
-    v_shade = a_faceType < 0.5 ? 1.0 : (a_faceType < 1.5 ? 0.45 : 0.3);
+    // Shading — top face always 1.0, side faces vary with rotation
+    v_shade = a_faceType < 0.5 ? 1.0 : (a_faceType < 1.5 ? rightShade : leftShade);
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
@@ -197,6 +226,7 @@ export class MapRenderer {
       u_elevations: gl.getUniformLocation(this.program, 'u_elevations'),
       u_biomes: gl.getUniformLocation(this.program, 'u_biomes'),
       u_biomeColors: gl.getUniformLocation(this.program, 'u_biomeColors'),
+      u_rotation: gl.getUniformLocation(this.program, 'u_rotation'),
     };
 
     // Create data textures
@@ -310,6 +340,7 @@ export class MapRenderer {
     gl.uniform1f(this.locs.u_zoom, camera.zoom);
     gl.uniform2f(this.locs.u_pan, camera.panX, camera.panY);
     gl.uniform1f(this.locs.u_heightScale, 80);
+    gl.uniform1f(this.locs.u_rotation, camera.rotation || 0);
 
     // Textures
     gl.uniform1i(this.locs.u_elevations, 0);

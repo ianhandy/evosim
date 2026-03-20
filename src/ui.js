@@ -36,6 +36,7 @@ let camTilt = 0.5;   // 0.2 (flat) to 0.8 (steep)
 let camZoom = 1.0;
 let camPanX = 0;
 let camPanY = 0;
+let camRotation = 0; // radians, snaps to 45° increments
 let isDragging = false;
 let dragButton = -1;
 let dragLastX = 0;
@@ -389,7 +390,18 @@ mapCanvas.addEventListener('touchend', () => { isDragging = false; });
 
 // Double-click to reset camera
 mapCanvas.addEventListener('dblclick', () => {
-  camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0;
+  camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
+});
+
+// Q/E to rotate map in 45° increments
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const step = Math.PI / 4; // 45 degrees
+  if (e.key === 'q' || e.key === 'Q') {
+    camRotation -= step;
+  } else if (e.key === 'e' || e.key === 'E') {
+    camRotation += step;
+  }
 });
 
 // ── Render loop (decoupled from sim) ──
@@ -506,7 +518,7 @@ function startRenderLoop() {
         mapRenderer.updateData(views.elevations, views.biomes);
       }
       mapRenderer.render(
-        { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY },
+        { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotation: camRotation },
         getBiomeColors()
       );
     } else {
@@ -1418,7 +1430,7 @@ function checkDisclosures(gen, pops) {
       'Your Observation Begins',
       `<p>You're watching 5 species evolve in real time. The simulation runs <strong>population genetics equations</strong> every generation — the same math biologists use to model real evolution.</p>
 <p>The <strong>map</strong> shows terrain and species density. The <strong>chart</strong> tracks population over time. The <strong>journal</strong> records significant events.</p>
-<p>Drag to pan the map. Scroll to zoom. Right-drag to tilt.</p>
+<p>Drag to pan. Scroll to zoom. Right-drag to tilt. Q/E to rotate.</p>
 <p>Click the <strong>?</strong> buttons anytime for detailed explanations of the science behind each panel.</p>`
     );
   }
