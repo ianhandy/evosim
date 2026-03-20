@@ -109,15 +109,17 @@ const VERT_SRC = `
       renderElev = WATER_LEVEL + t * t * BEACH_ZONE; // quadratic ease-in
     }
 
-    // Pillar from surface to global minimum
-    // For water tiles, side faces start at water surface (not seafloor)
-    // so the pillar is visible from the waterline down
     float floorElev = max(0.0, u_minElev - 0.02);
     float waterIz = WATER_LEVEL * hScale;
     float surfaceIz = renderElev * hScale;
     bool isWater = elev < WATER_LEVEL;
-    float sideTopIz = isWater ? waterIz : surfaceIz;  // pillar starts here
-    float floorIz = floorElev * hScale;
+
+    // Pillar height:
+    // Water tiles: from water surface down to global floor
+    // Land tiles: from terrain surface down to WATER LEVEL (not global floor)
+    //   — water tiles handle everything below the waterline
+    float sideTopIz = isWater ? waterIz : surfaceIz;
+    float floorIz = isWater ? (floorElev * hScale) : waterIz;
     float pillarH = max(0.0, sideTopIz - floorIz);
 
     // Water tiles always render side faces to prevent jagged gaps at coastlines

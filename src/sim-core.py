@@ -741,30 +741,43 @@ def _assign_biomes():
         nb = padded_elev[1+dr:gs+1+dr, 1+dc:gs+1+dc]
         max_slope = np.maximum(max_slope, np.abs(elevations - nb))
 
-    # ── Rocky: steep + volcanic ──
-    volcanic = (tile_flags & 2) > 0
-    vol_padded = np.pad(volcanic.astype(np.float32), 1, mode='constant')
-    near_volcanic = (vol_padded[:-2, 1:-1] + vol_padded[2:, 1:-1] +
-                     vol_padded[1:-1, :-2] + vol_padded[1:-1, 2:] +
-                     vol_padded[:-2, :-2] + vol_padded[:-2, 2:] +
-                     vol_padded[2:, :-2] + vol_padded[2:, 2:]) > 0
-    rocky = is_land & (
-        volcanic |
-        (near_volcanic & (max_slope > 0.025)) |
-        (max_slope > 0.05)
-    )
-    base[rocky] = BIOME_ROCKY_SHORE
-
-    # ── Beach: land touching water + 1-tile buffer ──
+    # ── Beach first (so rocky check can exclude coastal tiles) ──
     is_water = (~is_land).astype(np.float32)
     padded_w = np.pad(is_water, 1, mode='constant', constant_values=0)
     water_adj = (padded_w[:-2, 1:-1] + padded_w[2:, 1:-1] +
                  padded_w[1:-1, :-2] + padded_w[1:-1, 2:] +
                  padded_w[:-2, :-2] + padded_w[:-2, 2:] +
                  padded_w[2:, :-2] + padded_w[2:, 2:])
+    near_water = water_adj > 0
+
+    # Also compute 2-tile water proximity for rocky exclusion
+    near_water_f = near_water.astype(np.float32)
+    nw_pad = np.pad(near_water_f, 1, mode='constant')
+    near_water_2 = (nw_pad[:-2, 1:-1] + nw_pad[2:, 1:-1] +
+                    nw_pad[1:-1, :-2] + nw_pad[1:-1, 2:]) > 0
+
+    # ── Rocky: steep + volcanic, but NOT near the coastline ──
+    # Steepness at the land-water boundary is just the coast, not a cliff.
+    # Only apply steepness-based rocky to tiles well away from water.
+    volcanic = (tile_flags & 2) > 0
+    vol_padded = np.pad(volcanic.astype(np.float32), 1, mode='constant')
+    near_volcanic = (vol_padded[:-2, 1:-1] + vol_padded[2:, 1:-1] +
+                     vol_padded[1:-1, :-2] + vol_padded[1:-1, 2:] +
+                     vol_padded[:-2, :-2] + vol_padded[:-2, 2:] +
+                     vol_padded[2:, :-2] + vol_padded[2:, 2:]) > 0
+    inland = is_land & (~near_water) & (~near_water_2)
+    rocky = is_land & (
+        volcanic |                                    # summits always rocky
+        (near_volcanic & inland & (max_slope > 0.025)) |  # near volcano, inland
+        (inland & (max_slope > 0.05))                     # very steep, inland only
+    )
+    base[rocky] = BIOME_ROCKY_SHORE
+
+    # ── Beach: land touching water + 1-tile buffer ──
+    # (near_water already computed above)
 
     # First ring: directly touching water (not rocky cliffs)
-    coastal = is_land & (water_adj > 0) & (~rocky)
+    coastal = is_land & near_water & (~rocky)
     base[coastal] = BIOME_TIDAL_FLATS
 
     # Second ring: touching a coastal tile, only on low ground
