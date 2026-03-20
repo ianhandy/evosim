@@ -133,32 +133,72 @@ def _generate_terrain(seed_str):
 
     gs = GRID_SIZE
 
-    # ── Ocean floor baseline: varied noise, all negative ──
-    grid = rng.uniform(-0.25, -0.08, (gs, gs)).astype(np.float32)
-    # Add low-frequency undulation to the ocean floor
+    # ── Ocean floor baseline: shallow, slightly varied ──
+    grid = rng.uniform(-0.12, -0.04, (gs, gs)).astype(np.float32)
     floor_noise = rng.rand(gs, gs).astype(np.float32)
     floor_noise = gaussian_filter(floor_noise, sigma=gs * 0.12, mode='wrap')
     fn_lo, fn_hi = floor_noise.min(), floor_noise.max()
     if fn_hi > fn_lo:
         floor_noise = (floor_noise - fn_lo) / (fn_hi - fn_lo)
-    grid += (floor_noise - 0.5) * 0.08  # +/- 0.04 undulation
+    grid += (floor_noise - 0.5) * 0.06
 
-    # ── Plate drift direction (single plate, random direction) ──
+    # ── Plate drift ──
     drift_angle = rng.uniform(0, 2 * math.pi)
     drift_dx = math.cos(drift_angle)
     drift_dy = math.sin(drift_angle)
     drift_speed = rng.uniform(0.3, 0.6)
 
-    # ── Hotspots: many plumes spread across the grid ──
-    # More hotspots + higher power = more land coverage (target 70-90%)
-    num_hotspots = max(4, gs // 8)  # 4 at 32, 8 at 64
+    # ── Tectonic fault lines — hotspots cluster along 1-3 plate boundaries ──
+    # Each fault is a line across the grid. Hotspots form near these lines,
+    # simulating volcanism at plate convergence zones.
+    num_faults = rng.randint(1, 4)  # 1-3 fault lines
+    faults = []
+    for _ in range(num_faults):
+        # Random line through the interior: point + direction
+        fx = rng.uniform(gs * 0.2, gs * 0.8)
+        fy = rng.uniform(gs * 0.2, gs * 0.8)
+        fangle = rng.uniform(0, math.pi)  # direction
+        faults.append((fx, fy, math.cos(fangle), math.sin(fangle)))
+
+    # ── Hotspots: clustered near fault lines ──
+    num_hotspots = max(6, gs // 5)  # more hotspots for more land
     hotspots = []
-    for _ in range(num_hotspots):
-        hx = rng.uniform(gs * 0.08, gs * 0.92)
-        hy = rng.uniform(gs * 0.08, gs * 0.92)
-        power = rng.uniform(0.08, 0.18)
-        radius = rng.uniform(gs * 0.06, gs * 0.15)
+    for i in range(num_hotspots):
+        # 80% chance: place near a fault line. 20%: random position
+        if rng.random() < 0.8 and faults:
+            fault = faults[rng.randint(0, len(faults))]
+            fx, fy, fdx, fdy = fault
+            # Position along the fault line + perpendicular jitter
+            t = rng.uniform(-gs * 0.4, gs * 0.4)
+            perp = rng.uniform(-gs * 0.06, gs * 0.06)
+            hx = fx + fdx * t + fdy * perp
+            hy = fy + fdy * t - fdx * perp
+        else:
+            hx = rng.uniform(gs * 0.1, gs * 0.9)
+            hy = rng.uniform(gs * 0.1, gs * 0.9)
+
+        hx = max(1, min(gs - 2, hx))
+        hy = max(1, min(gs - 2, hy))
+        power = rng.uniform(0.10, 0.22)
+        radius = rng.uniform(gs * 0.06, gs * 0.18)
         hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
+
+    # ── Also uplift along fault lines directly — plate collision ridges ──
+    for fault in faults:
+        fx, fy, fdx, fdy = fault
+        ridge_width = gs * rng.uniform(0.03, 0.07)
+        ridge_power = rng.uniform(0.03, 0.08)
+        for r in range(gs):
+            for c in range(gs):
+                # Distance from point to fault line
+                dx = r - fx
+                dy = c - fy
+                # Project onto fault direction
+                along = dx * fdx + dy * fdy
+                perp = abs(dx * fdy - dy * fdx)
+                if perp < ridge_width:
+                    t = 1 - perp / ridge_width
+                    grid[r, c] += ridge_power * t * t
 
     # ── Simulate geological epochs ──
     # More epochs = more eruptions = more land
@@ -260,22 +300,18 @@ def _generate_terrain(seed_str):
     if en_hi > en_lo:
         edge_noise = (edge_noise - en_lo) / (en_hi - en_lo)
 
-    border_depth = gs * 0.18  # how deep the ocean border extends
+    border_depth = gs * 0.12  # narrower ocean border
     for r in range(gs):
         for c in range(gs):
-            # Distance from nearest edge
             edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
-            # Noise-modulated border width — creates bays and peninsulas
-            local_border = border_depth * (0.6 + edge_noise[r, c] * 0.8)
+            local_border = border_depth * (0.5 + edge_noise[r, c] * 1.0)
             if edge_dist < local_border:
-                # Smooth cubic falloff toward edges
                 t = edge_dist / local_border
-                push = (1 - t) ** 2 * 0.25  # strong downward push at edge
+                push = (1 - t) ** 2 * 0.20  # moderate push
                 grid[r, c] -= push
             else:
-                # Interior gets a mild upward push
                 interior_t = (edge_dist - local_border) / max(1, gs * 0.5 - local_border)
-                grid[r, c] += interior_t * 0.02
+                grid[r, c] += interior_t * 0.03  # stronger interior uplift
 
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
