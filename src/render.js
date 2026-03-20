@@ -208,8 +208,8 @@ const VERT_SRC = `
     // Depth: tiles further back (lower rRow+rCol) have higher z (further from camera)
     float depth = (rRow + rCol) / (gs * 2.0) - renderElev * 0.1;
     float z = 1.0 - depth * 2.0;
-    // Water surface sits slightly behind terrain so land always wins at coastlines
-    if (a_faceType > 2.5) z += 0.001;
+    // Water surface in front of seafloor
+    if (a_faceType > 2.5) z -= 0.003;
     gl_Position = vec4(pos.x, -pos.y, z, 1.0);
   }
 `;
@@ -260,31 +260,30 @@ const FRAG_SRC = `
     // Use elevation for water detection (more reliable than biome texture)
     bool isWaterFrag = v_elev < 0.20;
 
-    // ── Water tile side faces: translucent blue walls ──
+    // ── Water tile side faces: solid dark ocean walls ──
     if (isWaterFrag && v_faceType > 0.5 && v_faceType < 2.5) {
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      vec3 waterSide = vec3(0.04, 0.12, 0.25) + vec3(0.06, 0.10, 0.12) * (1.0 - depth);
+      vec3 waterSide = vec3(0.03, 0.08, 0.16) + vec3(0.04, 0.06, 0.08) * (1.0 - depth);
       waterSide *= (1.0 - v_pillarT * 0.5);
-      gl_FragColor = vec4(waterSide, 0.75);
+      gl_FragColor = vec4(waterSide, 1.0);
       return;
     }
 
-    // ── Water surface (face type 3) ──
+    // ── Water surface (face type 3) — opaque ocean color ──
     if (v_faceType > 2.5) {
       if (!isWaterFrag) discard;
 
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
-      float caustic = 0.5 + 0.5 * sin(v_dither * 40.0 + u_time * 2.0);
-      caustic = mix(1.0, caustic, 0.08 * (1.0 - depth));
 
-      vec3 waterColor = vec3(
-        (15.0 + (1.0 - depth) * 65.0) / 255.0,
-        (70.0 + (1.0 - depth) * 90.0) / 255.0,
-        (130.0 + (1.0 - depth) * 70.0) / 255.0
-      ) * caustic;
+      // Ocean color: shallow turquoise → deep dark blue
+      vec3 shallow = vec3(0.15, 0.35, 0.40);
+      vec3 deep = vec3(0.03, 0.08, 0.18);
+      vec3 waterColor = mix(shallow, deep, depth);
 
-      float alpha = 0.5 + depth * 0.4;
-      gl_FragColor = vec4(waterColor, alpha);
+      // Subtle per-tile variation
+      waterColor += (v_dither - 0.5) * 0.02;
+
+      gl_FragColor = vec4(waterColor, 1.0);
       return;
     }
 
