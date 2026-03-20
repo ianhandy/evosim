@@ -205,11 +205,12 @@ const VERT_SRC = `
     vec4 flowRaw = texture2D(u_flowDirs, texCoord);
     v_flowData = flowRaw * 255.0; // decode to 0-8 direction codes
 
-    // Depth: tiles further back (lower rRow+rCol) have higher z (further from camera)
-    float depth = (rRow + rCol) / (gs * 2.0) - renderElev * 0.1;
-    float z = 1.0 - depth * 2.0;
-    // Water surface in front of seafloor
-    if (a_faceType > 2.5) z -= 0.003;
+    // Depth: map isometric position to z range [0.05, 0.95]
+    // Leaves headroom at both ends for face-type offsets
+    float depthT = (rRow + rCol) / (gs * 2.0);
+    float z = 0.9 - depthT * 0.8 + renderElev * 0.05;
+    // Water surface in front of seafloor, land sides in front of water
+    if (a_faceType > 2.5) z -= 0.01;  // water surface: in front
     gl_Position = vec4(pos.x, -pos.y, z, 1.0);
   }
 `;
@@ -331,27 +332,64 @@ const FRAG_SRC = `
       color = bc / 255.0 + vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
     }
 
-    // ── Within-tile texture (top faces only) ──
+    // ── Within-tile texture + tree sprites (top faces only) ──
     if (v_faceType < 0.5) {
       float n1 = fract(sin(v_quadPos.x * 43.1 + v_quadPos.y * 17.3 + v_dither * 91.7) * 43758.5);
       float n2 = fract(sin(v_quadPos.x * 127.3 + v_quadPos.y * 311.1 + v_dither * 53.2) * 28461.9);
       float n3 = fract(sin((v_quadPos.x + v_quadPos.y) * 73.7 + v_dither * 197.3) * 15731.3);
 
-      // Subtle within-tile variation (small — should not look patchy)
       color += (n1 - 0.5) * 0.02;
 
       if (biome == 2) {
-        // Forest: subtle canopy texture — darker and lighter spots
-        float canopy = n2 * 0.5 + n3 * 0.5;
-        color += (canopy - 0.5) * 0.03 * v_forestDensity;
+        // Forest: tree sprites — small dark circles scattered across the tile
+        // Number of trees depends on forest density
+        vec3 treeColor = vec3(0.04, 0.12, 0.03);      // dark canopy
+        vec3 treeLightColor = vec3(0.08, 0.20, 0.06);  // lit canopy edge
+        float numTrees = 3.0 + v_forestDensity * 4.0;  // 3-7 trees
+
+        for (float ti = 0.0; ti < 7.0; ti += 1.0) {
+          if (ti >= numTrees) break;
+          // Deterministic tree position within tile from tile hash + index
+          float tx = fract(sin(v_dither * 73.1 + ti * 127.3) * 43758.5);
+          float ty = fract(sin(v_dither * 311.7 + ti * 91.1) * 28461.9);
+          // Keep trees away from tile edges
+          tx = 0.15 + tx * 0.7;
+          ty = 0.15 + ty * 0.7;
+
+          float dist = length(v_quadPos - vec2(tx, ty));
+          float treeSize = 0.08 + fract(sin(ti * 53.2 + v_dither * 17.3) * 15731.3) * 0.06;
+
+          if (dist < treeSize) {
+            // Tree canopy: dark center, slightly lighter edge
+            float t = dist / treeSize;
+            vec3 tc = mix(treeColor, treeLightColor, t);
+            color = mix(color, tc, 0.7);
+          }
+        }
       } else if (biome == 3) {
-        // Beach: fine sand grain
+        // Beach: fine sand grain + sparse trees if near forest
         color += (n1 * 0.6 + n2 * 0.4 - 0.5) * 0.02;
-        if (v_coastal > 0.3 && n3 > 0.75) {
-          color *= 0.94; // subtle wet patches
+
+        // 1-2 trees on beach tiles adjacent to forest
+        if (v_forestDensity > 0.1) {
+          for (float ti = 0.0; ti < 2.0; ti += 1.0) {
+            float tx = fract(sin(v_dither * 43.7 + ti * 197.3) * 28461.9);
+            float ty = fract(sin(v_dither * 127.1 + ti * 53.7) * 43758.5);
+            tx = 0.2 + tx * 0.6;
+            ty = 0.2 + ty * 0.6;
+            // Only show if hash passes threshold (sparse)
+            float show = fract(sin(v_dither * 311.1 + ti * 73.7) * 15731.3);
+            if (show < v_forestDensity * 0.6) {
+              float dist = length(v_quadPos - vec2(tx, ty));
+              if (dist < 0.07) {
+                vec3 palmColor = vec3(0.06, 0.15, 0.04);
+                color = mix(color, palmColor, 0.5 * (1.0 - dist / 0.07));
+              }
+            }
+          }
         }
       } else if (biome == 4) {
-        // Rock: subtle crack lines
+        // Rock: crack lines
         float crack = abs(n1 - n2);
         if (crack < 0.06) {
           color *= 0.7;

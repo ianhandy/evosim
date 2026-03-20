@@ -558,7 +558,7 @@ def _generate_terrain(seed_str):
                 ch_start = v_radius * rng.uniform(0.05, 0.12)
                 ch_end = v_radius * rng.uniform(1.3, 2.0)
                 ch_width = max(2.5, v_radius * rng.uniform(0.2, 0.35))
-                ch_depth = v_height * rng.uniform(0.4, 0.7)
+                ch_depth = v_height * rng.uniform(0.5, 0.85)
 
                 along = (rows_v - pr) * ch_dx + (cols_v - pc) * ch_dy
                 perp = np.abs((rows_v - pr) * (-ch_dy) + (cols_v - pc) * ch_dx)
@@ -582,9 +582,9 @@ def _generate_terrain(seed_str):
                 rdx = math.cos(ridge_angle)
                 rdy = math.sin(ridge_angle)
 
-                ridge_len = v_radius * rng.uniform(1.0, 1.6)
-                ridge_width = max(1.5, v_radius * rng.uniform(0.06, 0.14))
-                ridge_height = v_height * rng.uniform(0.15, 0.35)
+                ridge_len = v_radius * rng.uniform(1.0, 1.8)
+                ridge_width = max(2.0, v_radius * rng.uniform(0.08, 0.18))
+                ridge_height = v_height * rng.uniform(0.4, 0.7)
 
                 along = (rows_v - pr) * rdx + (cols_v - pc) * rdy
                 perp = np.abs((rows_v - pr) * (-rdy) + (cols_v - pc) * rdx)
