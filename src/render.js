@@ -99,7 +99,15 @@ const VERT_SRC = `
     rotated.x += u_pan.x / u_resolution.x * 2.0;
     rotated.y += u_pan.y / u_resolution.y * 2.0;
 
-    v_shade = a_faceType < 0.5 ? 1.0 : (a_faceType < 1.5 ? 0.45 : 0.3);
+    // Directional hillshade for top faces (sample neighbor elevations)
+    if (a_faceType < 0.5) {
+      float texel = 1.0 / gs;
+      float hL = texture2D(u_elevations, texCoord + vec2(-texel, 0.0)).r;
+      float hU = texture2D(u_elevations, texCoord + vec2(0.0, -texel)).r;
+      v_shade = 0.5 + 0.5 * clamp(0.5 + (elev - hL) * 2.5 + (elev - hU) * 2.0, 0.0, 1.0);
+    } else {
+      v_shade = a_faceType < 1.5 ? 0.45 : 0.3;
+    }
     v_elev = elev;
     v_biome = texture2D(u_biomes, texCoord).r * 255.0;
     v_faceType = a_faceType;
@@ -140,9 +148,18 @@ const FRAG_SRC = `
     // Apply face shading
     color *= v_shade;
 
-    // Water shimmer
+    // Water: depth-dependent blue overlay (matches Canvas 2D renderer)
+    // Shallow = bright translucent blue, deep = dark opaque blue
     if (biome <= 1 && v_faceType < 0.5) {
-      color += vec3(0.02, 0.04, 0.08) * (1.0 - v_elev);
+      float depth = (0.20 - v_elev) / 0.18; // normalized depth (0=shore, 1=abyss)
+      depth = clamp(depth, 0.0, 1.0);
+      float alpha = 0.3 + depth * 0.6;
+      vec3 waterColor = vec3(
+        (20.0 + (1.0 - depth) * 60.0) / 255.0,
+        (80.0 + (1.0 - depth) * 80.0) / 255.0,
+        (140.0 + (1.0 - depth) * 60.0) / 255.0
+      );
+      color = mix(color, waterColor, alpha);
     }
 
     // Population overlay — blend on top faces only
