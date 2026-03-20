@@ -116,15 +116,20 @@ def _generate_terrain(seed_str):
     """
     Generate terrain via hotspot volcanism + plate drift + erosion.
 
-    1. Start with flat ocean floor (negative elevation, ~-0.45 + noise)
-    2. Place 1-3 hotspot mantle plumes at fixed positions
+    Generates on an oversized canvas (1.5× GRID_SIZE) so geology can spread
+    freely. After the sim, finds all land, crops to fit with ocean padding,
+    and resamples down to GRID_SIZE. No land is cut off.
+
+    1. Start with flat ocean floor (negative elevation + noise)
+    2. Place hotspot mantle plumes clustered along fault lines
     3. Simulate N epochs of geological time:
        a. Each hotspot erupts: deposits elevation with squared falloff
        b. Plate drift: builds trail of decreasing deposits behind hotspot
        c. Erosion: flat subtraction + weighted blur smoothing
     4. Snapshot at a random epoch for terrain diversity
+    5. Crop to land bounding box + ocean padding, resample to GRID_SIZE
     """
-    from scipy.ndimage import gaussian_filter
+    from scipy.ndimage import gaussian_filter, zoom
 
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str))
     random.seed(seed_val)
@@ -132,11 +137,13 @@ def _generate_terrain(seed_str):
     rng = np.random.RandomState(seed_val)
 
     gs = GRID_SIZE
+    # Work on an oversized canvas so land can grow freely in any direction
+    igs = int(gs * 1.5)  # internal generation size
 
     # ── Ocean floor baseline: very shallow, most will become land ──
-    grid = rng.uniform(-0.06, -0.01, (gs, gs)).astype(np.float32)
-    floor_noise = rng.rand(gs, gs).astype(np.float32)
-    floor_noise = gaussian_filter(floor_noise, sigma=gs * 0.12, mode='wrap')
+    grid = rng.uniform(-0.06, -0.01, (igs, igs)).astype(np.float32)
+    floor_noise = rng.rand(igs, igs).astype(np.float32)
+    floor_noise = gaussian_filter(floor_noise, sigma=igs * 0.12, mode='wrap')
     fn_lo, fn_hi = floor_noise.min(), floor_noise.max()
     if fn_hi > fn_lo:
         floor_noise = (floor_noise - fn_lo) / (fn_hi - fn_lo)
@@ -149,45 +156,40 @@ def _generate_terrain(seed_str):
     drift_speed = rng.uniform(0.3, 0.6)
 
     # ── Tectonic fault lines — hotspots cluster along 1-3 plate boundaries ──
-    # Each fault is a line across the grid. Hotspots form near these lines,
-    # simulating volcanism at plate convergence zones.
-    num_faults = rng.randint(1, 4)  # 1-3 fault lines
+    num_faults = rng.randint(1, 4)
     faults = []
     for _ in range(num_faults):
-        # Random line through the interior: point + direction
-        fx = rng.uniform(gs * 0.2, gs * 0.8)
-        fy = rng.uniform(gs * 0.2, gs * 0.8)
-        fangle = rng.uniform(0, math.pi)  # direction
+        fx = rng.uniform(igs * 0.2, igs * 0.8)
+        fy = rng.uniform(igs * 0.2, igs * 0.8)
+        fangle = rng.uniform(0, math.pi)
         faults.append((fx, fy, math.cos(fangle), math.sin(fangle)))
 
     # ── Hotspots: clustered near fault lines ──
-    num_hotspots = max(6, gs // 5)  # more hotspots for more land
+    num_hotspots = max(6, igs // 5)
     hotspots = []
     for i in range(num_hotspots):
-        # 80% chance: place near a fault line. 20%: random position
         if rng.random() < 0.8 and faults:
             fault = faults[rng.randint(0, len(faults))]
             fx, fy, fdx, fdy = fault
-            # Position along the fault line + perpendicular jitter
-            t = rng.uniform(-gs * 0.4, gs * 0.4)
-            perp = rng.uniform(-gs * 0.06, gs * 0.06)
+            t = rng.uniform(-igs * 0.4, igs * 0.4)
+            perp = rng.uniform(-igs * 0.06, igs * 0.06)
             hx = fx + fdx * t + fdy * perp
             hy = fy + fdy * t - fdx * perp
         else:
-            hx = rng.uniform(gs * 0.1, gs * 0.9)
-            hy = rng.uniform(gs * 0.1, gs * 0.9)
+            hx = rng.uniform(igs * 0.1, igs * 0.9)
+            hy = rng.uniform(igs * 0.1, igs * 0.9)
 
-        hx = max(1, min(gs - 2, hx))
-        hy = max(1, min(gs - 2, hy))
+        hx = max(1, min(igs - 2, hx))
+        hy = max(1, min(igs - 2, hy))
         power = rng.uniform(0.10, 0.22)
-        radius = rng.uniform(gs * 0.06, gs * 0.18)
+        radius = rng.uniform(igs * 0.06, igs * 0.18)
         hotspots.append({'x': hx, 'y': hy, 'power': power, 'radius': radius})
 
-    # ── Also uplift along fault lines directly — plate collision ridges ──
-    rows_grid, cols_grid = np.meshgrid(np.arange(gs), np.arange(gs), indexing='ij')
+    # ── Fault ridge uplift ──
+    rows_grid, cols_grid = np.meshgrid(np.arange(igs), np.arange(igs), indexing='ij')
     for fault in faults:
         fx, fy, fdx, fdy = fault
-        ridge_width = gs * rng.uniform(0.03, 0.07)
+        ridge_width = igs * rng.uniform(0.03, 0.07)
         ridge_power = rng.uniform(0.03, 0.08)
         dx = rows_grid - fx
         dy = cols_grid - fy
@@ -197,17 +199,16 @@ def _generate_terrain(seed_str):
         grid[mask] += ridge_power * (t[mask] ** 2)
 
     # ── Simulate geological epochs ──
-    # More epochs = more eruptions = more land
     num_epochs = rng.randint(80, 200)
     snapshot_epoch = rng.randint(int(num_epochs * 0.6), num_epochs)
 
-    # Pre-build distance grids for each hotspot (reused every epoch)
+    # Pre-build distance grids for each hotspot
     hs_masks = []
     for hs in hotspots:
         cx, cy = int(hs['x']), int(hs['y'])
-        max_r = int(hs['radius'] * 1.3) + 2  # max jittered radius
-        r_lo, r_hi = max(0, cx - max_r), min(gs, cx + max_r + 1)
-        c_lo, c_hi = max(0, cy - max_r), min(gs, cy + max_r + 1)
+        max_r = int(hs['radius'] * 1.3) + 2
+        r_lo, r_hi = max(0, cx - max_r), min(igs, cx + max_r + 1)
+        c_lo, c_hi = max(0, cy - max_r), min(igs, cy + max_r + 1)
         local_rows = np.arange(r_lo, r_hi)[:, None]
         local_cols = np.arange(c_lo, c_hi)[None, :]
         dist = np.sqrt((local_rows - cx) ** 2 + (local_cols - cy) ** 2).astype(np.float32)
@@ -228,10 +229,10 @@ def _generate_terrain(seed_str):
             trail_len = int(epoch * drift_speed * 0.6)
             if trail_len > 1:
                 trail_r = max(2, int(hs['radius'] * 0.6))
-                steps = np.arange(1, min(trail_len, gs))
+                steps = np.arange(1, min(trail_len, igs))
                 trs = (hs['x'] - drift_dx * steps * 1.2).astype(int)
                 tcs = (hs['y'] - drift_dy * steps * 1.2).astype(int)
-                valid = (trs >= trail_r) & (trs < gs - trail_r) & (tcs >= trail_r) & (tcs < gs - trail_r)
+                valid = (trs >= trail_r) & (trs < igs - trail_r) & (tcs >= trail_r) & (tcs < igs - trail_r)
                 # Pre-build trail kernel once
                 if epoch == 0 or not hasattr(_generate_terrain, '_trail_kernel') or _generate_terrain._trail_r != trail_r:
                     kr = np.arange(-trail_r, trail_r + 1)
@@ -267,40 +268,64 @@ def _generate_terrain(seed_str):
     if 'snapshot' in dir():
         grid = snapshot
 
-    # ── Center the landmass ──
-    # Find center of mass of all land (elevation > 0) and circular-shift
-    # the grid so the island sits in the middle. This preserves the natural
-    # shape from the geological sim — just recenters it.
-    land_mask = (grid > 0).astype(np.float32)
-    land_total = land_mask.sum()
-    if land_total > 0:
-        # Circular mean — handles wrapping correctly
-        rows = np.arange(gs)
-        cols = np.arange(gs)
-        row_angles = rows * 2 * math.pi / gs
-        col_angles = cols * 2 * math.pi / gs
-        # Weight by elevation so peaks pull harder than barely-land tiles
-        weights = grid * land_mask
-        row_weights = weights.sum(axis=1)  # sum across columns
-        col_weights = weights.sum(axis=0)  # sum across rows
-        # Circular mean for row
-        sin_r = (row_weights * np.sin(row_angles)).sum()
-        cos_r = (row_weights * np.cos(row_angles)).sum()
-        cm_row = math.atan2(sin_r, cos_r) * gs / (2 * math.pi) % gs
-        # Circular mean for col
-        sin_c = (col_weights * np.sin(col_angles)).sum()
-        cos_c = (col_weights * np.cos(col_angles)).sum()
-        cm_col = math.atan2(sin_c, cos_c) * gs / (2 * math.pi) % gs
-        # Shift so center of mass lands at grid center
-        shift_r = int(round(gs / 2 - cm_row))
-        shift_c = int(round(gs / 2 - cm_col))
-        grid = np.roll(grid, shift_r, axis=0)
-        grid = np.roll(grid, shift_c, axis=1)
+    # ── Crop to land bounding box + ocean padding, resample to GRID_SIZE ──
+    # Find all land tiles and compute their bounding box
+    land_mask = grid > 0
+    if np.any(land_mask):
+        land_coords = np.argwhere(land_mask)
+        r_min, c_min = land_coords.min(axis=0)
+        r_max, c_max = land_coords.max(axis=0)
+
+        # Add ocean padding — enough for coastlines and shallow water
+        # Padding is proportional to the land extent so islands get more sea
+        land_h = r_max - r_min + 1
+        land_w = c_max - c_min + 1
+        pad = max(3, int(max(land_h, land_w) * 0.15))
+
+        # Make the crop square (the output grid is square)
+        crop_size = max(land_h, land_w) + pad * 2
+        # Center the land in the square crop
+        r_center = (r_min + r_max) // 2
+        c_center = (c_min + c_max) // 2
+        crop_r0 = r_center - crop_size // 2
+        crop_c0 = c_center - crop_size // 2
+
+        # Clamp to canvas bounds, filling with ocean where needed
+        src_r0 = max(0, crop_r0)
+        src_c0 = max(0, crop_c0)
+        src_r1 = min(igs, crop_r0 + crop_size)
+        src_c1 = min(igs, crop_c0 + crop_size)
+
+        # Create the crop with ocean fill for out-of-bounds regions
+        cropped = np.full((crop_size, crop_size), -0.04, dtype=np.float32)
+        dst_r0 = src_r0 - crop_r0
+        dst_c0 = src_c0 - crop_c0
+        dst_r1 = dst_r0 + (src_r1 - src_r0)
+        dst_c1 = dst_c0 + (src_c1 - src_c0)
+        cropped[dst_r0:dst_r1, dst_c0:dst_c1] = grid[src_r0:src_r1, src_c0:src_c1]
+    else:
+        # No land at all — use center crop
+        offset = (igs - gs) // 2
+        cropped = grid[offset:offset + gs, offset:offset + gs].copy()
+        crop_size = gs
+
+    # Resample cropped region to GRID_SIZE × GRID_SIZE
+    if crop_size != gs:
+        zoom_factor = gs / crop_size
+        grid = zoom(cropped, zoom_factor, order=1, mode='nearest').astype(np.float32)
+        # zoom can produce slightly off-size results — force exact
+        if grid.shape[0] != gs or grid.shape[1] != gs:
+            final = np.full((gs, gs), -0.04, dtype=np.float32)
+            copy_r = min(gs, grid.shape[0])
+            copy_c = min(gs, grid.shape[1])
+            final[:copy_r, :copy_c] = grid[:copy_r, :copy_c]
+            grid = final
+    else:
+        grid = cropped
 
     # ── Detail noise pass — break up the smooth volcanic slopes ──
-    # FBM noise adds natural terrain roughness: ridges, gullies, uneven surfaces
     detail = rng.rand(gs, gs).astype(np.float32)
-    detail = gaussian_filter(detail, sigma=gs * 0.02, mode='wrap')  # fine detail
+    detail = gaussian_filter(detail, sigma=gs * 0.02, mode='wrap')
     detail_lo, detail_hi = detail.min(), detail.max()
     if detail_hi > detail_lo:
         detail = (detail - detail_lo) / (detail_hi - detail_lo)
@@ -318,25 +343,24 @@ def _generate_terrain(seed_str):
                                    (detail - 0.5) * 0.02)
 
     # ── Edge-to-interior gradient ──
-    # Push edges down (ocean), push interior up (land).
-    # Noise-modulated edge distance creates irregular coastlines.
+    # Gentle push at the very edges to ensure clean ocean border.
+    # Since we cropped to fit all land, this only affects the outermost
+    # few tiles — no land gets submerged.
     edge_noise = rng.rand(gs, gs).astype(np.float32)
     edge_noise = gaussian_filter(edge_noise, sigma=gs * 0.08, mode='wrap')
     en_lo, en_hi = edge_noise.min(), edge_noise.max()
     if en_hi > en_lo:
         edge_noise = (edge_noise - en_lo) / (en_hi - en_lo)
 
-    border_depth = gs * 0.12  # narrower ocean border
+    border_depth = gs * 0.08  # thin border — just ensure edges are ocean
     row_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
     col_dist = np.minimum(np.arange(gs), np.arange(gs - 1, -1, -1))
     edge_dist = np.minimum(row_dist[:, None], col_dist[None, :]).astype(np.float32)
     local_border = border_depth * (0.5 + edge_noise * 1.0)
     in_border = edge_dist < local_border
     t_border = np.where(in_border, edge_dist / np.maximum(local_border, 0.001), 0)
-    push = (1 - t_border) ** 2 * 0.20
-    interior_denom = np.maximum(1, gs * 0.5 - local_border)
-    interior_t = (edge_dist - local_border) / interior_denom
-    grid -= np.where(in_border, push, -interior_t * 0.03)
+    push = (1 - t_border) ** 2 * 0.15  # gentle push
+    grid -= np.where(in_border, push, 0)
 
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
@@ -344,7 +368,6 @@ def _generate_terrain(seed_str):
         hi = lo + 1
 
     # Normalize to 0-1. Sea level is where the raw grid crosses 0.
-    # Find where 0 sits in the normalized range
     zero_norm = (0 - lo) / (hi - lo)
 
     # Map so that raw 0 (sea level) → 0.20 in our output
