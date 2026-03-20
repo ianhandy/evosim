@@ -99,14 +99,16 @@ const VERT_SRC = `
     if (eE < WATER_LEVEL) waterNeighbors += 1.0;
     v_coastal = waterNeighbors / 4.0; // 0=inland, 1=surrounded by water
 
-    // Height easing: smooth transition at waterline
-    // Beach tiles (0.20-0.28) ease up gradually with a quadratic curve
-    // so they don't jump abruptly from the flat water surface
+    // ── Elevation normalization ──
+    // Compress peaks, expand low-mid range for natural terrain profile.
+    // Raw elev: 0.0-0.20 = underwater, 0.20-1.0 = land.
+    // Apply sqrt curve to land portion so low terrain gets more height
+    // variation and peaks don't tower unrealistically.
     float renderElev = elev;
-    float BEACH_ZONE = 0.08; // width of easing zone above sea level
-    if (elev > WATER_LEVEL && elev < WATER_LEVEL + BEACH_ZONE) {
-      float t = (elev - WATER_LEVEL) / BEACH_ZONE;
-      renderElev = WATER_LEVEL + t * t * BEACH_ZONE; // quadratic ease-in
+    if (elev > WATER_LEVEL) {
+      float landT = (elev - WATER_LEVEL) / (1.0 - WATER_LEVEL); // 0-1 over land range
+      float normalized = sqrt(landT); // sqrt compresses highs, expands lows
+      renderElev = WATER_LEVEL + normalized * (1.0 - WATER_LEVEL) * 0.7; // 0.7 = overall height reduction
     }
 
     float floorElev = max(0.0, u_minElev - 0.02);
@@ -207,12 +209,13 @@ const VERT_SRC = `
     vec4 flowRaw = texture2D(u_flowDirs, texCoord);
     v_flowData = flowRaw * 255.0; // decode to 0-8 direction codes
 
-    // Depth: map isometric position to z range [0.05, 0.95]
-    // Leaves headroom at both ends for face-type offsets
+    // Depth: isometric position only — no elevation in z.
+    // Back tiles (low rRow+rCol) get high z (far), front tiles get low z (near).
+    // Elevation handled by y-position, not depth buffer.
     float depthT = (rRow + rCol) / (gs * 2.0);
-    float z = 0.9 - depthT * 0.8 + renderElev * 0.05;
-    // Water surface in front of seafloor, land sides in front of water
-    if (a_faceType > 2.5) z -= 0.01;  // water surface: in front
+    float z = 0.9 - depthT * 0.85;
+    // Water surface slightly in front of same-tile seafloor
+    if (a_faceType > 2.5) z -= 0.005;
     gl_Position = vec4(pos.x, -pos.y, z, 1.0);
   }
 `;
