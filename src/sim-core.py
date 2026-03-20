@@ -462,42 +462,37 @@ def _generate_terrain(seed_str):
 
 def _assign_biomes():
     """
-    Classify biomes from elevation, water proximity, and vegetation.
-    Sea level is at ~0.20. Below = underwater. Above = land types.
+    Classify biomes by water proximity and elevation.
 
-    Context-sensitive rules:
-    - Tiles adjacent to water at low elevation → tidal flats (beach)
-    - Low-elevation land with high vegetation → reed beds (marsh)
-    - Low-elevation land with low vegetation → tidal flats (barren shore)
-    - High elevation → rocky shore regardless of vegetation
+    Rules:
+    - Underwater deep    → deep water
+    - Underwater shallow → shallow marsh
+    - Land touching water → tidal flats (beach) — mandatory
+    - All other land     → reed beds (forest)
+    - Very high land     → rocky shore (mountain/volcanic)
     """
-    gs = GRID_SIZE
     SEA_LEVEL = 0.20
+    is_land = elevations >= SEA_LEVEL
 
-    # Start with elevation-based classification
+    # Water tiles: deep vs shallow by depth
     base = np.where(elevations < 0.08, BIOME_DEEP_WATER,
-           np.where(elevations < SEA_LEVEL, BIOME_SHALLOW_MARSH,
-           np.where(elevations < 0.25, BIOME_TIDAL_FLATS,
-           np.where(elevations < 0.55, BIOME_REED_BEDS,
-                                       BIOME_ROCKY_SHORE)))).astype(np.uint8)
+                    BIOME_SHALLOW_MARSH).astype(np.uint8)
 
-    # Count water neighbors per tile (how coastal is it?)
-    is_water = (elevations < SEA_LEVEL).astype(np.float32)
+    # All land defaults to forest (reed beds)
+    base[is_land] = BIOME_REED_BEDS
+
+    # High elevation → rocky shore
+    base[elevations >= 0.55] = BIOME_ROCKY_SHORE
+
+    # Beach: any land tile adjacent to water (including diagonals)
+    is_water = (~is_land).astype(np.float32)
     padded = np.pad(is_water, 1, mode='constant', constant_values=0)
     water_neighbors = (padded[:-2, 1:-1] + padded[2:, 1:-1] +
-                       padded[1:-1, :-2] + padded[1:-1, 2:])
-
-    # Land tiles in the transition zone (0.20 - 0.35 elevation)
-    transition = (elevations >= SEA_LEVEL) & (elevations < 0.35)
-
-    # Coastal land: adjacent to water → tidal flats (beach/sand)
-    coastal = transition & (water_neighbors > 0)
+                       padded[1:-1, :-2] + padded[1:-1, 2:] +
+                       padded[:-2, :-2] + padded[:-2, 2:] +
+                       padded[2:, :-2] + padded[2:, 2:])
+    coastal = is_land & (water_neighbors > 0)
     base[coastal] = BIOME_TIDAL_FLATS
-
-    # Non-coastal low land: vegetation determines if reed beds or tidal flats
-    inland_low = transition & (water_neighbors == 0)
-    barren = inland_low & (vegetation < 0.3)
-    base[barren] = BIOME_TIDAL_FLATS  # dry, barren ground
 
     biomes[:] = base
 
