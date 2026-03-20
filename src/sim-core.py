@@ -462,22 +462,22 @@ def _generate_terrain(seed_str):
 
 def _assign_biomes():
     """
-    Classify biomes by elevation gain from the coastline.
+    Classify biomes via probabilistic BFS from coastline.
 
     Rules:
     - Underwater → deep water / shallow marsh
-    - Land touching water → beach (mandatory)
-    - Beach extends inland until elevation has risen enough above
-      the local coastline baseline. Flat coasts = wide beaches,
-      steep coasts = narrow beaches.
-    - Once elevation gain exceeds threshold → forest
+    - Coastal land → beach (mandatory first ring)
+    - Inland: forest probability increases exponentially per tile from coast.
+      Cliffs (high elevation gain) skip straight to forest.
+      Once one forest tile rolls, next tile is 95% forest.
+      Once two consecutive forest tiles roll, everything beyond is forest.
     - Very high elevation → rocky shore
     """
     from collections import deque
 
     gs = GRID_SIZE
     SEA_LEVEL = 0.20
-    FOREST_RISE = 0.06  # elevation gain above coast baseline to trigger forest
+    CLIFF_RISE = 0.10  # elevation gain that counts as a cliff → instant forest
 
     is_land = elevations >= SEA_LEVEL
 
@@ -497,38 +497,79 @@ def _assign_biomes():
                        padded[:-2, :-2] + padded[:-2, 2:] +
                        padded[2:, :-2] + padded[2:, 2:])
 
-    # BFS from coastline: beach spreads inland until elevation rise exceeds threshold
+    # BFS from coastline with probabilistic forest transition
     visited = np.zeros((gs, gs), dtype=bool)
-    coast_baseline = np.zeros((gs, gs), dtype=np.float32)  # tracks the beach baseline elevation
+    coast_baseline = np.zeros((gs, gs), dtype=np.float32)
+    forest_streak = np.zeros((gs, gs), dtype=np.int32)  # consecutive forest parents
+    tile_depth = np.zeros((gs, gs), dtype=np.int32)      # distance from coast in tiles
     queue = deque()
 
-    # Seed: all water-adjacent land tiles are beach
+    # Seed: all water-adjacent land tiles are beach (depth 0)
     coastal_mask = is_land & (water_neighbors > 0)
     for r, c in np.argwhere(coastal_mask):
         r, c = int(r), int(c)
-        base[r, c] = BIOME_TIDAL_FLATS
+        elev_here = float(elevations[r, c])
+        rise = elev_here - SEA_LEVEL
+        # Cliff exception: if first land tile is way above water, match forest
+        if rise >= CLIFF_RISE:
+            base[r, c] = BIOME_REED_BEDS
+            forest_streak[r, c] = 1
+        else:
+            base[r, c] = BIOME_TIDAL_FLATS
         visited[r, c] = True
-        coast_baseline[r, c] = float(elevations[r, c])
+        coast_baseline[r, c] = elev_here
+        tile_depth[r, c] = 0
         queue.append((r, c))
 
-    # BFS: spread beach inland until elevation gain exceeds threshold
+    # Use deterministic random for reproducibility (seeded by terrain seed)
+    rng_biome = random.Random(int(np.sum(elevations * 1000)))
+
     dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
     while queue:
         r, c = queue.popleft()
-        baseline = coast_baseline[r, c]
+        parent_streak = int(forest_streak[r, c])
+        parent_depth = int(tile_depth[r, c])
+        baseline = float(coast_baseline[r, c])
+
         for dr, dc in dirs:
             nr, nc = r + dr, c + dc
             if 0 <= nr < gs and 0 <= nc < gs and not visited[nr, nc] and is_land[nr, nc]:
-                neighbor_elev = float(elevations[nr, nc])
-                rise = neighbor_elev - baseline
-                if rise < FOREST_RISE:
-                    # Still beach — hasn't risen enough
+                visited[nr, nc] = True
+                n_elev = float(elevations[nr, nc])
+                depth = parent_depth + 1
+                tile_depth[nr, nc] = depth
+                coast_baseline[nr, nc] = baseline
+                rise = n_elev - baseline
+
+                # Determine if this tile is forest or beach
+                is_forest = False
+
+                if parent_streak >= 2:
+                    # Two consecutive forest tiles already → all forest from here
+                    is_forest = True
+                elif rise >= CLIFF_RISE:
+                    # Cliff: steep rise from coast → forest
+                    is_forest = True
+                elif parent_streak == 1:
+                    # One forest parent → 95% chance of forest
+                    is_forest = rng_biome.random() < 0.95
+                else:
+                    # Exponential probability based on depth from coast
+                    # depth 1: ~8%, depth 2: ~25%, depth 3: ~50%, depth 4: ~75%
+                    prob = 1.0 - math.exp(-0.35 * depth)
+                    # Elevation boost: higher tiles more likely to be forest
+                    elev_boost = min(0.3, rise * 3.0)
+                    prob = min(1.0, prob + elev_boost)
+                    is_forest = rng_biome.random() < prob
+
+                if is_forest:
+                    base[nr, nc] = BIOME_REED_BEDS
+                    forest_streak[nr, nc] = parent_streak + 1
+                else:
                     base[nr, nc] = BIOME_TIDAL_FLATS
-                    visited[nr, nc] = True
-                    # Carry forward the baseline (stays tied to the coast)
-                    coast_baseline[nr, nc] = baseline
-                    queue.append((nr, nc))
-                # If rise >= threshold, leave as forest (don't visit — BFS stops here)
+                    forest_streak[nr, nc] = 0
+
+                queue.append((nr, nc))
 
     biomes[:] = base
 
