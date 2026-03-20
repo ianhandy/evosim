@@ -4,7 +4,7 @@
  */
 
 import * as sim from './sim.js';
-import { GLOBAL } from './layout.js';
+import { GLOBAL, TRAIT } from './layout.js';
 import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
 import { drawPortrait } from './creatures.js';
 import { checkForEntries, getRecent } from './journal.js';
@@ -45,6 +45,12 @@ let dragLastY = 0;
 const popHistory = [];
 const MAX_HISTORY = 300;
 
+// Trait history for selection tab — one entry per sampled generation
+// Each entry: { gen, traits: Float32Array(5*5) } — [speciesIdx * 5 + traitIdx]
+const traitHistory = [];
+let activeTab = 'overview';
+const UNIVERSAL_TRAIT_NAMES = ['Clutch Size', 'Longevity', 'Mutation Rate', 'Metabolism', 'Migration'];
+
 // Ghost data: extinct species' last N data points, preserved after death
 const ghostData = {}; // species index → [{gen, pop}]
 let knownExtinctions = new Set();
@@ -67,6 +73,22 @@ document.querySelectorAll('.size-btn').forEach(btn => {
     document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     gridSize = parseInt(btn.dataset.size);
+  });
+});
+
+// ── Lab tab switching ──
+document.querySelectorAll('.lab-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.lab-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+    const tabId = 'tab-' + btn.dataset.tab;
+    document.getElementById(tabId).classList.add('active');
+    activeTab = btn.dataset.tab;
+    // Force redraw on tab switch
+    if (activeTab === 'selection') renderSelectionCharts();
+    if (activeTab === 'life-history') renderLifeHistoryChart();
+    if (activeTab === 'stats') renderStatsReadouts();
   });
 });
 
@@ -383,6 +405,33 @@ function startRenderLoop() {
       popHistory.push({ gen, pops: [...pops] });
       if (popHistory.length > MAX_HISTORY) popHistory.shift();
 
+      // Track trait history (population-weighted mean per species per universal trait)
+      {
+        const gs = sim.getLayout().gridSize;
+        const G2 = gs * gs;
+        const T = sim.getLayout().traitsPerSpecies;
+        const traits = new Float32Array(25); // 5 species × 5 universal traits
+        for (let s = 0; s < 5; s++) {
+          let totalPop = 0;
+          for (let i = 0; i < G2; i++) {
+            const p = views.populations[i * 5 + s];
+            if (p > 0) {
+              totalPop += p;
+              for (let t = 0; t < 5; t++) {
+                traits[s * 5 + t] += views.traitMeans[(i * 5 + s) * T + t] * p;
+              }
+            }
+          }
+          if (totalPop > 0) {
+            for (let t = 0; t < 5; t++) traits[s * 5 + t] /= totalPop;
+          } else {
+            for (let t = 0; t < 5; t++) traits[s * 5 + t] = NaN;
+          }
+        }
+        traitHistory.push({ gen, traits });
+        if (traitHistory.length > MAX_HISTORY) traitHistory.shift();
+      }
+
       // Detect new extinctions → freeze ghost data
       for (let s = 0; s < 5; s++) {
         if (pops[s] === 0 && !knownExtinctions.has(s)) {
@@ -408,6 +457,11 @@ function startRenderLoop() {
       renderPopChart();
       renderSpeciesCards(pops);
       renderJournal();
+
+      // Lab mode tabs
+      if (activeTab === 'selection') renderSelectionCharts();
+      if (activeTab === 'life-history') renderLifeHistoryChart();
+      if (activeTab === 'stats') renderStatsReadouts();
     }
 
     // Render map (every frame — camera might move)
@@ -950,6 +1004,249 @@ function renderSpeciesCards(totalPops) {
   }
 }
 
+// ── Selection tab — trait line charts ──
+function renderSelectionCharts() {
+  if (!traitHistory.length) return;
+  const style = getComputedStyle(document.documentElement);
+  const cardBg = style.getPropertyValue('--card').trim() || '#2a1500';
+  const dimColor = style.getPropertyValue('--dim').trim() || '#7a5a2a';
+  const gridColor = style.getPropertyValue('--border').trim() || '#3d2200';
+  const dpr = window.devicePixelRatio || 1;
+
+  for (let t = 0; t < 5; t++) {
+    const canvas = document.getElementById(`selection-chart-${t}`);
+    if (!canvas) continue;
+    if (canvas.width !== canvas.offsetWidth * dpr || canvas.height !== canvas.offsetHeight * dpr) {
+      canvas.width = canvas.offsetWidth * dpr;
+      canvas.height = canvas.offsetHeight * dpr;
+    }
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    ctx.fillStyle = cardBg;
+    ctx.fillRect(0, 0, w, h);
+
+    const pad = { l: 30, r: 6, t: 14, b: 14 };
+    const cw = w - pad.l - pad.r;
+    const ch = h - pad.t - pad.b;
+
+    // Title
+    ctx.font = '8px monospace';
+    ctx.fillStyle = dimColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(UNIVERSAL_TRAIT_NAMES[t], pad.l, 10);
+
+    // Y gridlines (0, 0.5, 1.0)
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 0.5;
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 2; i++) {
+      const yVal = i * 0.5;
+      const y = pad.t + ch - (yVal * ch);
+      ctx.beginPath();
+      ctx.moveTo(pad.l, y);
+      ctx.lineTo(pad.l + cw, y);
+      ctx.stroke();
+      ctx.fillStyle = dimColor;
+      ctx.fillText(yVal.toFixed(1), pad.l - 3, y + 3);
+    }
+
+    // Gen range
+    if (traitHistory.length > 1) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = dimColor;
+      ctx.fillText(`Gen ${Math.floor(traitHistory[0].gen)}`, pad.l + 15, h - 2);
+      ctx.fillText(`${Math.floor(traitHistory[traitHistory.length - 1].gen)}`, pad.l + cw - 10, h - 2);
+    }
+
+    // Species lines
+    for (let s = 0; s < 5; s++) {
+      ctx.strokeStyle = SPECIES_COLORS[s];
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = knownExtinctions.has(s) ? 0.25 : 0.85;
+      if (knownExtinctions.has(s)) ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < traitHistory.length; i++) {
+        const val = traitHistory[i].traits[s * 5 + t];
+        if (isNaN(val)) { started = false; continue; }
+        const x = pad.l + (i / Math.max(1, traitHistory.length - 1)) * cw;
+        const y = pad.t + ch - (val * ch);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ── Life History tab — r/K scatter plot ──
+function renderLifeHistoryChart() {
+  if (!traitHistory.length) return;
+  const canvas = document.getElementById('life-history-chart');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== canvas.offsetWidth * dpr || canvas.height !== canvas.offsetHeight * dpr) {
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width / dpr;
+  const h = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const style = getComputedStyle(document.documentElement);
+  const cardBg = style.getPropertyValue('--card').trim() || '#2a1500';
+  const dimColor = style.getPropertyValue('--dim').trim() || '#7a5a2a';
+  const gridColor = style.getPropertyValue('--border').trim() || '#3d2200';
+  const goldDim = style.getPropertyValue('--gold-dim').trim() || '#a08940';
+
+  ctx.fillStyle = cardBg;
+  ctx.fillRect(0, 0, w, h);
+
+  const pad = { l: 36, r: 12, t: 16, b: 24 };
+  const cw = w - pad.l - pad.r;
+  const ch = h - pad.t - pad.b;
+
+  // Axes
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.l, pad.t);
+  ctx.lineTo(pad.l, pad.t + ch);
+  ctx.lineTo(pad.l + cw, pad.t + ch);
+  ctx.stroke();
+
+  // Midlines
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.l + cw / 2, pad.t);
+  ctx.lineTo(pad.l + cw / 2, pad.t + ch);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(pad.l, pad.t + ch / 2);
+  ctx.lineTo(pad.l + cw, pad.t + ch / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Axis labels
+  ctx.font = '8px monospace';
+  ctx.fillStyle = dimColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('Clutch Size →', pad.l + cw / 2, h - 4);
+  ctx.save();
+  ctx.translate(8, pad.t + ch / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('Longevity →', 0, 0);
+  ctx.restore();
+
+  // Quadrant labels
+  ctx.font = '7px monospace';
+  ctx.fillStyle = goldDim;
+  ctx.globalAlpha = 0.4;
+  ctx.textAlign = 'center';
+  ctx.fillText('K-selected', pad.l + cw * 0.25, pad.t + 10);
+  ctx.fillText('r-selected', pad.l + cw * 0.75, pad.t + ch - 4);
+  ctx.fillText('Opportunist', pad.l + cw * 0.75, pad.t + 10);
+  ctx.fillText('Enduring', pad.l + cw * 0.25, pad.t + ch - 4);
+  ctx.globalAlpha = 1;
+
+  // Plot species dots from latest trait history
+  const latest = traitHistory[traitHistory.length - 1];
+  for (let s = 0; s < 5; s++) {
+    const clutch = latest.traits[s * 5 + TRAIT.CLUTCH_SIZE];
+    const longevity = latest.traits[s * 5 + TRAIT.LONGEVITY];
+    if (isNaN(clutch) || isNaN(longevity)) continue;
+
+    const x = pad.l + clutch * cw;
+    const y = pad.t + ch - longevity * ch;
+
+    // Glow
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = hexToRgba(SPECIES_COLORS[s], 0.15);
+    ctx.fill();
+
+    // Dot
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = SPECIES_COLORS[s];
+    ctx.globalAlpha = knownExtinctions.has(s) ? 0.3 : 1;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Label
+    ctx.font = '8px monospace';
+    ctx.fillStyle = SPECIES_COLORS[s];
+    ctx.textAlign = 'left';
+    ctx.fillText(SPECIES_NAMES[s], x + 7, y + 3);
+  }
+}
+
+// ── Stats tab — numeric readouts ──
+function renderStatsReadouts() {
+  const views = sim.getViews();
+  if (!views) return;
+  const el = document.getElementById('stats-readouts');
+  if (!el) return;
+
+  const gen = views.globals[GLOBAL.GENERATION];
+  const season = views.globals[GLOBAL.SEASON_FACTOR];
+  const vegMean = views.globals[GLOBAL.VEGETATION_MEAN];
+
+  // Total population
+  let totalPop = 0;
+  for (let s = 0; s < 5; s++) totalPop += views.globals[GLOBAL.TOTAL_POP_0 + s];
+
+  // Carrying capacity proxy: sum tile-level K (approximate from biome/vegetation)
+  // Use pop/K as fitness proxy where K ≈ scaled total capacity
+  const gs = sim.getLayout().gridSize;
+  const G2 = gs * gs;
+  const estimatedK = G2 * 50; // rough per-tile K average
+  const fitProxy = estimatedK > 0 ? (totalPop / estimatedK).toFixed(3) : '—';
+
+  // Season name
+  const seasonNames = ['Winter', 'Spring', 'Summer', 'Autumn'];
+  const seasonIdx = Math.floor(((season + 0.25) % 1) * 4) % 4;
+
+  // Alive count
+  let aliveCount = 0;
+  for (let s = 0; s < 5; s++) if (views.globals[GLOBAL.TOTAL_POP_0 + s] > 0) aliveCount++;
+
+  el.innerHTML = `
+    <div class="stat-row">
+      <div><div class="stat-label">Total Population</div></div>
+      <div class="stat-value">${Math.floor(totalPop).toLocaleString()}</div>
+    </div>
+    <div class="stat-row">
+      <div><div class="stat-label">Species Alive</div></div>
+      <div class="stat-value">${aliveCount} / 5</div>
+    </div>
+    <div class="stat-row">
+      <div><div class="stat-label">Fitness Proxy</div><div class="stat-sub">pop / est. carrying capacity</div></div>
+      <div class="stat-value">${fitProxy}</div>
+    </div>
+    <div class="stat-row">
+      <div><div class="stat-label">Vegetation Level</div></div>
+      <div class="stat-value">${(vegMean !== undefined ? vegMean : 0).toFixed(2)}</div>
+    </div>
+    <div class="stat-row">
+      <div><div class="stat-label">Season Factor</div><div class="stat-sub">${seasonNames[seasonIdx]}</div></div>
+      <div class="stat-value">${season.toFixed(3)}</div>
+    </div>
+    <div class="stat-row">
+      <div><div class="stat-label">Generation</div></div>
+      <div class="stat-value">${Math.floor(gen).toLocaleString()}</div>
+    </div>
+  `;
+}
+
 // ── Epoch display ──
 const epochBanner = $('epoch-banner');
 const epochNameEl = $('epoch-name');
@@ -1286,6 +1583,7 @@ $('end-new').addEventListener('click', () => {
   observationEnded = false;
   // Reset state
   popHistory.length = 0;
+  traitHistory.length = 0;
   Object.keys(ghostData).forEach(k => delete ghostData[k]);
   knownExtinctions.clear();
   shownEulogies.clear();
