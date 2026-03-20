@@ -190,43 +190,45 @@ async function renderPreview() {
 
   if (!previewData) { previewPending = false; return; }
 
-  // Render the actual elevation/biome data
-  const tileW = (cw / gs) * 0.85;
-  const tileH = tileW * 0.5;
-  const heightScale = 40;
-  const offsetX = cw / 2;
-  const offsetY = (ch - gs * tileH * 0.5) / 2 + 20;
-  const biomeColors = getBiomeColors();
-
+  // Simple top-down 2D grid — each tile is a colored square
   ctx.fillStyle = getMapBg();
   ctx.fillRect(0, 0, cw, ch);
 
+  const size = Math.min(cw, ch);
+  const tileSize = size / gs;
+  const ox = (cw - size) / 2;
+  const oy = (ch - size) / 2;
+
+  const WATER_LEVEL = 0.20;
   for (let r = 0; r < gs; r++) {
     for (let c = 0; c < gs; c++) {
       const idx = r * gs + c;
       const e = previewData.elevations[idx];
       const biome = previewData.biomes[idx];
 
-      const bc = biomeColors[biome];
-      const tr = bc[0] + e * 25;
-      const tg = bc[1] + e * 18;
-      const tb = bc[2] + e * 12;
-      const shade = 0.6 + e * 0.3;
+      let cr, cg, cb;
+      if (e < 0.08) {
+        // Deep water
+        cr = 15; cg = 40; cb = 80;
+      } else if (e < WATER_LEVEL) {
+        // Shallow water
+        const t = (e - 0.08) / 0.12;
+        cr = 15 + t * 30 | 0; cg = 40 + t * 40 | 0; cb = 80 + t * 40 | 0;
+      } else if (biome === 3) {
+        // Beach
+        cr = 180; cg = 165; cb = 120;
+      } else if (biome === 4) {
+        // Rocky
+        const t = (e - 0.55) / 0.45;
+        cr = 70 + t * 20 | 0; cg = 68 + t * 18 | 0; cb = 65 + t * 15 | 0;
+      } else {
+        // Forest — darker green at higher elevation
+        const t = Math.min(1, (e - WATER_LEVEL) / 0.5);
+        cr = 30 + t * 20 | 0; cg = 70 + t * 30 | 0; cb = 25 + t * 10 | 0;
+      }
 
-      const ix = (c - r) * tileW * 0.5;
-      const iy = (c + r) * tileH * 0.5;
-      const iz = e * heightScale;
-      const sx = offsetX + ix;
-      const sy = offsetY + iy - iz;
-
-      ctx.fillStyle = `rgb(${tr * shade | 0},${tg * shade | 0},${tb * shade | 0})`;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy - tileH * 0.5);
-      ctx.lineTo(sx + tileW * 0.5, sy);
-      ctx.lineTo(sx, sy + tileH * 0.5);
-      ctx.lineTo(sx - tileW * 0.5, sy);
-      ctx.closePath();
-      ctx.fill();
+      ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+      ctx.fillRect(ox + c * tileSize, oy + r * tileSize, Math.ceil(tileSize), Math.ceil(tileSize));
     }
   }
   previewPending = false;
