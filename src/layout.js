@@ -10,6 +10,8 @@ export const SPECIES_COUNT = 5;
 export const TRAITS_PER_SPECIES = 6;
 export const MAX_RIVERS = 20;
 export const MAX_RIVER_POINTS = 512;
+export const MAX_LAVA_FLOWS = 10;
+export const MAX_LAVA_POINTS = 256;
 
 export const TRAIT = {
   CLUTCH_SIZE: 0,
@@ -62,6 +64,8 @@ export function createLayout(gridSize) {
   layout.tileFlags   = section('tileFlags',   Uint8Array,   G2);
   layout.riverPaths  = section('riverPaths',  Int16Array,   MAX_RIVER_POINTS * 2);
   layout.riverMeta   = section('riverMeta',   Float32Array, MAX_RIVERS * 4);
+  layout.lavaPaths   = section('lavaPaths',   Int16Array,   MAX_LAVA_POINTS * 2);
+  layout.lavaMeta    = section('lavaMeta',    Float32Array, MAX_LAVA_FLOWS * 4);
 
   layout.totalBytes = offset;
   layout.gridSize = gridSize;

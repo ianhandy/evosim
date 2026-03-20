@@ -323,12 +323,15 @@ const FRAG_SRC = `
   }
 `;
 
-// ── River shaders ──
+// ── Flow shaders (shared by rivers and lava) ──
 
-const RIVER_VERT_SRC = `
+const FLOW_VERT_SRC = `
   precision mediump float;
-  attribute vec2 a_pos;
-  attribute float a_width;
+  attribute vec2 a_pos;       // grid position (row, col) — center of ribbon
+  attribute vec2 a_normal;    // perpendicular offset direction
+  attribute float a_side;     // -1 or +1 (left/right side of ribbon)
+  attribute float a_width;    // half-width in grid units
+  attribute float a_pathT;    // 0-1 along the flow path (for animation)
 
   uniform float u_gridSize;
   uniform vec2 u_resolution;
@@ -339,12 +342,16 @@ const RIVER_VERT_SRC = `
   uniform float u_rotSteps;
   uniform sampler2D u_elevations;
 
-  varying float v_alpha;
+  varying float v_pathT;
+  varying float v_side;
 
   void main() {
     float gs = u_gridSize;
-    float row = a_pos.x;
-    float col = a_pos.y;
+    // Offset position perpendicular to flow direction
+    float halfW = a_width * 0.4 / gs;  // scale width relative to grid
+    vec2 gridPos = a_pos + a_normal * a_side * halfW * gs;
+    float row = gridPos.x;
+    float col = gridPos.y;
 
     // Grid rotation
     float rRow = row, rCol = col;
@@ -353,7 +360,8 @@ const RIVER_VERT_SRC = `
     else if (rot == 2) { rRow = gs - 1.0 - row; rCol = gs - 1.0 - col; }
     else if (rot == 3) { rRow = gs - 1.0 - col; rCol = row; }
 
-    vec2 texCoord = vec2((col + 0.5) / gs, (row + 0.5) / gs);
+    // Sample elevation at the center position (not offset)
+    vec2 texCoord = vec2((a_pos.y + 0.5) / gs, (a_pos.x + 0.5) / gs);
     float elev = texture2D(u_elevations, texCoord).r;
 
     float tileW = (2.0 / gs) * 0.85 * u_zoom;
@@ -368,17 +376,59 @@ const RIVER_VERT_SRC = `
     pos.x += u_pan.x / u_resolution.x * 2.0;
     pos.y += u_pan.y / u_resolution.y * 2.0;
 
+    v_pathT = a_pathT;
+    v_side = a_side;
+
     gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
-    gl_PointSize = max(2.0, a_width * u_zoom * 3.0);
-    v_alpha = 0.7;
   }
 `;
 
-const RIVER_FRAG_SRC = `
+const FLOW_FRAG_RIVER = `
   precision mediump float;
-  varying float v_alpha;
+  uniform float u_time;
+  varying float v_pathT;
+  varying float v_side;
   void main() {
-    gl_FragColor = vec4(0.08, 0.27, 0.55, v_alpha);
+    // Animated flow along the path
+    float flow = 0.5 + 0.5 * sin((v_pathT * 8.0 - u_time * 1.5) * 6.28);
+    float ripple = 0.5 + 0.5 * sin((v_pathT * 16.0 - u_time * 2.0) * 6.28);
+
+    vec3 deep = vec3(0.06, 0.18, 0.38);
+    vec3 light = vec3(0.14, 0.32, 0.55);
+    vec3 color = mix(deep, light, flow * 0.5 + ripple * 0.15);
+
+    // Fade at edges of ribbon
+    float edgeFade = 1.0 - abs(v_side) * 0.3;
+    float alpha = 0.8 * edgeFade;
+
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+const FLOW_FRAG_LAVA = `
+  precision mediump float;
+  uniform float u_time;
+  varying float v_pathT;
+  varying float v_side;
+  void main() {
+    // Slow molten flow
+    float flow = 0.5 + 0.5 * sin((v_pathT * 5.0 - u_time * 0.4) * 6.28);
+    float flicker = 0.5 + 0.5 * sin((v_pathT * 12.0 - u_time * 1.0 + v_side * 3.0) * 6.28);
+
+    vec3 crust = vec3(0.18, 0.04, 0.0);
+    vec3 molten = vec3(0.95, 0.35, 0.05);
+    vec3 glow = vec3(1.0, 0.8, 0.15);
+
+    vec3 color = mix(crust, molten, flow * 0.6);
+    // Hot veins
+    if (flicker > 0.7) {
+      color = mix(color, glow, (flicker - 0.7) * 2.5);
+    }
+
+    float edgeFade = 1.0 - abs(v_side) * 0.2;
+    float alpha = 0.9 * edgeFade;
+
+    gl_FragColor = vec4(color, alpha);
   }
 `;
 
@@ -396,6 +446,7 @@ export class MapRenderer {
     this.fallback = false;
     this.program = null;
     this.riverProgram = null;
+    this.lavaProgram = null;
     this.gridSize = 0;
     this.elevTexture = null;
     this.biomeTexture = null;
@@ -451,34 +502,63 @@ export class MapRenderer {
       u_popMode: gl.getUniformLocation(this.program, 'u_popMode'),
     };
 
-    // ── River program ──
-    const rvs = this._compileShader(gl.VERTEX_SHADER, RIVER_VERT_SRC);
-    const rfs = this._compileShader(gl.FRAGMENT_SHADER, RIVER_FRAG_SRC);
-    if (rvs && rfs) {
-      this.riverProgram = gl.createProgram();
-      gl.attachShader(this.riverProgram, rvs);
-      gl.attachShader(this.riverProgram, rfs);
-      gl.linkProgram(this.riverProgram);
-      if (gl.getProgramParameter(this.riverProgram, gl.LINK_STATUS)) {
-        this.riverLocs = {
-          a_pos: gl.getAttribLocation(this.riverProgram, 'a_pos'),
-          a_width: gl.getAttribLocation(this.riverProgram, 'a_width'),
-          u_gridSize: gl.getUniformLocation(this.riverProgram, 'u_gridSize'),
-          u_resolution: gl.getUniformLocation(this.riverProgram, 'u_resolution'),
-          u_tilt: gl.getUniformLocation(this.riverProgram, 'u_tilt'),
-          u_zoom: gl.getUniformLocation(this.riverProgram, 'u_zoom'),
-          u_pan: gl.getUniformLocation(this.riverProgram, 'u_pan'),
-          u_heightScale: gl.getUniformLocation(this.riverProgram, 'u_heightScale'),
-          u_rotSteps: gl.getUniformLocation(this.riverProgram, 'u_rotSteps'),
-          u_elevations: gl.getUniformLocation(this.riverProgram, 'u_elevations'),
-        };
-        this.riverPosBuf = gl.createBuffer();
-        this.riverWidthBuf = gl.createBuffer();
-      } else {
-        console.warn('River shader link failed');
-        this.riverProgram = null;
+    // ── Flow programs (rivers + lava share vertex shader) ──
+    const flowVs = this._compileShader(gl.VERTEX_SHADER, FLOW_VERT_SRC);
+    const riverFs = this._compileShader(gl.FRAGMENT_SHADER, FLOW_FRAG_RIVER);
+    const lavaFs = this._compileShader(gl.FRAGMENT_SHADER, FLOW_FRAG_LAVA);
+
+    const buildFlowProgram = (vs, fs, name) => {
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn(name + ' shader link failed');
+        return null;
       }
+      return {
+        program: prog,
+        locs: {
+          a_pos: gl.getAttribLocation(prog, 'a_pos'),
+          a_normal: gl.getAttribLocation(prog, 'a_normal'),
+          a_side: gl.getAttribLocation(prog, 'a_side'),
+          a_width: gl.getAttribLocation(prog, 'a_width'),
+          a_pathT: gl.getAttribLocation(prog, 'a_pathT'),
+          u_gridSize: gl.getUniformLocation(prog, 'u_gridSize'),
+          u_resolution: gl.getUniformLocation(prog, 'u_resolution'),
+          u_tilt: gl.getUniformLocation(prog, 'u_tilt'),
+          u_zoom: gl.getUniformLocation(prog, 'u_zoom'),
+          u_pan: gl.getUniformLocation(prog, 'u_pan'),
+          u_heightScale: gl.getUniformLocation(prog, 'u_heightScale'),
+          u_rotSteps: gl.getUniformLocation(prog, 'u_rotSteps'),
+          u_elevations: gl.getUniformLocation(prog, 'u_elevations'),
+          u_time: gl.getUniformLocation(prog, 'u_time'),
+        },
+      };
+    };
+
+    // River and lava share the same vertex shader, different fragment shaders
+    // Need separate VS compilations since WebGL can't share shader objects between programs
+    const flowVs2 = this._compileShader(gl.VERTEX_SHADER, FLOW_VERT_SRC);
+    const riverProg = buildFlowProgram(flowVs, riverFs, 'River');
+    const lavaProg = buildFlowProgram(flowVs2, lavaFs, 'Lava');
+
+    if (riverProg) {
+      this.riverProgram = riverProg.program;
+      this.riverLocs = riverProg.locs;
     }
+    if (lavaProg) {
+      this.lavaProgram = lavaProg.program;
+      this.lavaLocs = lavaProg.locs;
+    }
+
+    // Shared flow geometry buffers
+    this.flowPosBuf = gl.createBuffer();
+    this.flowNormalBuf = gl.createBuffer();
+    this.flowSideBuf = gl.createBuffer();
+    this.flowWidthBuf = gl.createBuffer();
+    this.flowPathTBuf = gl.createBuffer();
 
     this.elevTexture = gl.createTexture();
     this.biomeTexture = gl.createTexture();
@@ -619,46 +699,76 @@ export class MapRenderer {
     }
   }
 
-  updateRivers(riverPaths, riverMeta) {
-    if (this.fallback || !this.riverProgram) return;
-    const gl = this.gl;
-    const maxRivers = riverMeta.length / 4;
+  /**
+   * Build quad-strip geometry for a flow (river or lava).
+   * Returns { positions, normals, sides, widths, pathTs, vertCount }
+   */
+  _buildFlowGeometry(pathData, metaData) {
+    const maxFlows = metaData.length / 4;
+    const positions = [], normals = [], sides = [], widths = [], pathTs = [];
+    let pIdx = 0;
 
-    const positions = [];
-    const widths = [];
-    let rpIdx = 0;
-
-    for (let ri = 0; ri < maxRivers; ri++) {
-      const riverId = riverMeta[ri * 4];
-      if (riverId < 0) break;
-      const width = Math.max(1, riverMeta[ri * 4 + 2]);
+    for (let fi = 0; fi < maxFlows; fi++) {
+      const flowId = metaData[fi * 4];
+      if (flowId < 0) break;
+      const width = Math.max(1, metaData[fi * 4 + 2]);
 
       const path = [];
-      while (rpIdx < riverPaths.length / 2) {
-        const pr = riverPaths[rpIdx * 2];
-        const pc = riverPaths[rpIdx * 2 + 1];
-        rpIdx++;
+      while (pIdx < pathData.length / 2) {
+        const pr = pathData[pIdx * 2];
+        const pc = pathData[pIdx * 2 + 1];
+        pIdx++;
         if (pr < 0) break;
         path.push([pr, pc]);
       }
 
       if (path.length < 2) continue;
+      const pathLen = path.length;
 
-      for (let i = 0; i < path.length - 1; i++) {
-        positions.push(path[i][0], path[i][1]);
-        widths.push(width);
-        positions.push(path[i + 1][0], path[i + 1][1]);
-        widths.push(width);
+      // Build triangle strip: for each path point, emit 2 vertices (left + right)
+      // Then create triangles between consecutive pairs
+      for (let i = 0; i < pathLen - 1; i++) {
+        const [r0, c0] = path[i];
+        const [r1, c1] = path[i + 1];
+        // Direction along segment
+        const dr = r1 - r0, dc = c1 - c0;
+        const len = Math.sqrt(dr * dr + dc * dc) || 1;
+        // Normal perpendicular to direction
+        const nx = -dc / len, ny = dr / len;
+        const t0 = i / (pathLen - 1);
+        const t1 = (i + 1) / (pathLen - 1);
+
+        // Two triangles per segment (quad = 6 vertices)
+        // Left0, Right0, Left1, Right0, Right1, Left1
+        for (const [t, pr, pc] of [[t0, r0, c0], [t0, r0, c0], [t1, r1, c1], [t0, r0, c0], [t1, r1, c1], [t1, r1, c1]]) {
+          positions.push(pr, pc);
+          normals.push(nx, ny);
+          widths.push(width);
+          pathTs.push(t);
+        }
+        // Sides: L, R, L, R, R, L
+        sides.push(-1, 1, -1, 1, 1, -1);
       }
     }
 
-    this.riverVertCount = widths.length;
-    if (this.riverVertCount === 0) return;
+    return {
+      positions: new Float32Array(positions),
+      normals: new Float32Array(normals),
+      sides: new Float32Array(sides),
+      widths: new Float32Array(widths),
+      pathTs: new Float32Array(pathTs),
+      vertCount: sides.length,
+    };
+  }
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.riverPosBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.riverWidthBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(widths), gl.DYNAMIC_DRAW);
+  updateRivers(riverPaths, riverMeta) {
+    if (this.fallback) return;
+    this._riverGeo = this._buildFlowGeometry(riverPaths, riverMeta);
+  }
+
+  updateLava(lavaPaths, lavaMeta) {
+    if (this.fallback) return;
+    this._lavaGeo = this._buildFlowGeometry(lavaPaths, lavaMeta);
   }
 
   render(camera, biomeColors) {
@@ -731,32 +841,58 @@ export class MapRenderer {
     gl.disableVertexAttribArray(this.locs.a_tileIdx);
     gl.disableVertexAttribArray(this.locs.a_faceType);
 
-    // ── Draw rivers ──
-    if (this.riverProgram && this.riverLocs && this.riverVertCount > 0) {
-      gl.useProgram(this.riverProgram);
+    // ── Draw flows (rivers + lava) ──
+    const drawFlow = (program, locs, geo) => {
+      if (!program || !locs || !geo || geo.vertCount === 0) return;
+      gl.useProgram(program);
 
-      gl.uniform1f(this.riverLocs.u_gridSize, this.gridSize);
-      gl.uniform2f(this.riverLocs.u_resolution, cw, ch);
-      gl.uniform1f(this.riverLocs.u_tilt, camera.tilt);
-      gl.uniform1f(this.riverLocs.u_zoom, camera.zoom);
-      gl.uniform2f(this.riverLocs.u_pan, camera.panX, camera.panY);
-      gl.uniform1f(this.riverLocs.u_heightScale, 160);
-      gl.uniform1f(this.riverLocs.u_rotSteps, camera.rotSteps || 0);
-      gl.uniform1i(this.riverLocs.u_elevations, 0);
+      gl.uniform1f(locs.u_gridSize, this.gridSize);
+      gl.uniform2f(locs.u_resolution, cw, ch);
+      gl.uniform1f(locs.u_tilt, camera.tilt);
+      gl.uniform1f(locs.u_zoom, camera.zoom);
+      gl.uniform2f(locs.u_pan, camera.panX, camera.panY);
+      gl.uniform1f(locs.u_heightScale, 160);
+      gl.uniform1f(locs.u_rotSteps, camera.rotSteps || 0);
+      gl.uniform1i(locs.u_elevations, 0);
+      gl.uniform1f(locs.u_time, time);
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.riverPosBuf);
-      gl.enableVertexAttribArray(this.riverLocs.a_pos);
-      gl.vertexAttribPointer(this.riverLocs.a_pos, 2, gl.FLOAT, false, 0, 0);
+      // Upload geometry
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.flowPosBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.positions, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(locs.a_pos);
+      gl.vertexAttribPointer(locs.a_pos, 2, gl.FLOAT, false, 0, 0);
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.riverWidthBuf);
-      gl.enableVertexAttribArray(this.riverLocs.a_width);
-      gl.vertexAttribPointer(this.riverLocs.a_width, 1, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.flowNormalBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.normals, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(locs.a_normal);
+      gl.vertexAttribPointer(locs.a_normal, 2, gl.FLOAT, false, 0, 0);
 
-      gl.drawArrays(gl.LINES, 0, this.riverVertCount);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.flowSideBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.sides, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(locs.a_side);
+      gl.vertexAttribPointer(locs.a_side, 1, gl.FLOAT, false, 0, 0);
 
-      gl.disableVertexAttribArray(this.riverLocs.a_pos);
-      gl.disableVertexAttribArray(this.riverLocs.a_width);
-    }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.flowWidthBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.widths, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(locs.a_width);
+      gl.vertexAttribPointer(locs.a_width, 1, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.flowPathTBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.pathTs, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(locs.a_pathT);
+      gl.vertexAttribPointer(locs.a_pathT, 1, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, geo.vertCount);
+
+      gl.disableVertexAttribArray(locs.a_pos);
+      gl.disableVertexAttribArray(locs.a_normal);
+      gl.disableVertexAttribArray(locs.a_side);
+      gl.disableVertexAttribArray(locs.a_width);
+      gl.disableVertexAttribArray(locs.a_pathT);
+    };
+
+    drawFlow(this.riverProgram, this.riverLocs, this._riverGeo);
+    drawFlow(this.lavaProgram, this.lavaLocs, this._lavaGeo);
   }
 
   _compileShader(type, src) {

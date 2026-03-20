@@ -7,7 +7,7 @@
  * - The renderer reads from the shared buffer independently at 60fps
  */
 
-import { createLayout, createViews, GLOBAL, SPECIES_COUNT, TRAITS_PER_SPECIES, MAX_RIVERS, MAX_RIVER_POINTS } from './layout.js';
+import { createLayout, createViews, GLOBAL, SPECIES_COUNT, TRAITS_PER_SPECIES, MAX_RIVERS, MAX_RIVER_POINTS, MAX_LAVA_FLOWS, MAX_LAVA_POINTS } from './layout.js';
 
 let pyodide = null;
 let sharedBuffer = null;
@@ -76,6 +76,8 @@ export async function generatePreviewTerrain(gridSize, seed) {
   globalThis._js_tile_flags = prevViews.tileFlags;
   globalThis._js_river_paths = prevViews.riverPaths;
   globalThis._js_river_meta = prevViews.riverMeta;
+  globalThis._js_lava_paths = prevViews.lavaPaths;
+  globalThis._js_lava_meta = prevViews.lavaMeta;
   globalThis._layout_json = JSON.stringify(
     Object.fromEntries(
       Object.entries(prevLayout)
@@ -131,6 +133,8 @@ export async function init(gridSize, seed, onProgress) {
   globalThis._traits_per_species = TRAITS_PER_SPECIES;
   globalThis._max_rivers = MAX_RIVERS;
   globalThis._max_river_points = MAX_RIVER_POINTS;
+  globalThis._max_lava_flows = MAX_LAVA_FLOWS;
+  globalThis._max_lava_points = MAX_LAVA_POINTS;
 
   // Layout as JSON string
   const layoutInfo = {};
@@ -153,6 +157,8 @@ export async function init(gridSize, seed, onProgress) {
   globalThis._js_tile_flags = views.tileFlags;
   globalThis._js_river_paths = views.riverPaths;
   globalThis._js_river_meta = views.riverMeta;
+  globalThis._js_lava_paths = views.lavaPaths;
+  globalThis._js_lava_meta = views.lavaMeta;
 
   // Load and execute sim-core.py
   const simCode = await fetch('/sim-core.py').then(r => r.text());

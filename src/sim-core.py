@@ -1590,6 +1590,123 @@ def _volcanic_eruption(plate):
                 f'The earth splits. Ash rains. Elevation spikes. '
                 f'Life within two tiles is devastated.'})
 
+    # Spawn a lava flow from the eruption site
+    _spawn_lava_flow(vr, vc)
+
+
+# ── LAVA FLOWS ───────────────────────────────────────────────────────────────
+# Lava flows use the same path-following logic as rivers:
+# spawn at a high point, flow downhill, deposit elevation at terminus.
+# When lava hits water or runs out of slope, it solidifies and raises terrain.
+
+lava_flows = []    # list of lava dicts (same structure as rivers)
+_next_lava_id = 0
+
+LAVA_DEPOSIT = 0.02     # elevation gain per tick at flow terminus
+LAVA_COOLING_RATE = 50   # generations until a lava flow solidifies
+LAVA_MAX_LENGTH = 20     # max path length
+
+
+def _spawn_lava_flow(vr, vc):
+    """Create a lava flow originating at an eruption site. Traces downhill."""
+    global _next_lava_id
+    path = [(vr, vc)]
+    path_set = {(vr, vc)}
+    r, c = vr, vc
+
+    # Trace downhill greedily, like river advancement
+    for _ in range(LAVA_MAX_LENGTH):
+        best = None
+        best_elev = elevations[r, c]
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE and (nr, nc) not in path_set:
+                e = elevations[nr, nc]
+                if e < best_elev:
+                    best = (nr, nc)
+                    best_elev = e
+        if best is None:
+            break
+        r, c = best
+        path.append((r, c))
+        path_set.add((r, c))
+        # Stop if we hit water
+        if elevations[r, c] < 0.20:
+            break
+
+    if len(path) < 2:
+        return
+
+    lava = {
+        'id': _next_lava_id,
+        'path': path,
+        'age': 0,
+        'width': 2,
+        'active': True,
+    }
+    _next_lava_id += 1
+    lava_flows.append(lava)
+
+
+def _step_lava_flows():
+    """Age lava flows: deposit elevation at terminus, solidify when cooled."""
+    expired = []
+    for lava in lava_flows:
+        if not lava['active']:
+            continue
+        lava['age'] += 1
+
+        # Deposit elevation at the flow terminus (and last few tiles)
+        path = lava['path']
+        deposit_tiles = path[-3:]  # last 3 tiles get deposit
+        for r, c in deposit_tiles:
+            if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
+                elevations[r, c] = min(1.0, elevations[r, c] + LAVA_DEPOSIT)
+
+        # Cool and solidify
+        if lava['age'] > LAVA_COOLING_RATE:
+            lava['active'] = False
+            # Reclassify biomes where lava deposited
+            _assign_biomes()
+
+    # Remove very old inactive flows (keep last 5 for rendering)
+    inactive = [lf for lf in lava_flows if not lf['active']]
+    if len(inactive) > 5:
+        for old in inactive[:-5]:
+            lava_flows.remove(old)
+
+
+def _sync_lava_to_buffer():
+    """Write lava flow path data to shared buffer for JS rendering."""
+    from js import _js_lava_paths, _js_lava_meta
+    from pyodide.ffi import to_js
+
+    # Lava paths: same sentinel format as rivers
+    path_data = []
+    for lava in lava_flows:
+        for r, c in lava['path']:
+            path_data.append(r)
+            path_data.append(c)
+        path_data.append(-1)
+        path_data.append(-1)
+
+    max_vals = 256 * 2  # MAX_LAVA_POINTS * 2
+    while len(path_data) < max_vals:
+        path_data.append(-1)
+    path_data = path_data[:max_vals]
+
+    _js_lava_paths.set(to_js(np.array(path_data, dtype=np.int16)))
+
+    # Lava meta: [id, age, width, active] per flow
+    meta_data = []
+    max_flows = 10
+    for lava in lava_flows[:max_flows]:
+        meta_data.extend([lava['id'], lava['age'], lava['width'], 1.0 if lava['active'] else 0.0])
+    while len(meta_data) < max_flows * 4:
+        meta_data.extend([-1, 0, 0, 0])
+
+    _js_lava_meta.set(to_js(np.array(meta_data[:max_flows * 4], dtype=np.float32)))
+
 
 # ── BUFFER SYNC ───────────────────────────────────────────────────────────────
 
@@ -1636,6 +1753,7 @@ def init_simulation():
     _init_tectonics()
     _sync_to_buffer()
     _sync_rivers_to_buffer()
+    _sync_lava_to_buffer()
 
 
 def step_simulation(n=1):
@@ -1665,6 +1783,7 @@ def step_simulation(n=1):
         # Geological processes
         _spawn_river()
         _step_rivers()
+        _step_lava_flows()
         _update_tectonics()
 
         # Detection systems
@@ -1676,6 +1795,7 @@ def step_simulation(n=1):
 
     _sync_to_buffer()
     _sync_rivers_to_buffer()
+    _sync_lava_to_buffer()
 
 
 def flush_events():
@@ -1779,3 +1899,4 @@ def load_save_state(state_json):
     _build_river_barrier_cache()
     _sync_to_buffer()
     _sync_rivers_to_buffer()
+    _sync_lava_to_buffer()

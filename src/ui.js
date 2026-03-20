@@ -603,6 +603,7 @@ function startRenderLoop() {
       ]);
       mapRenderer.updateData(views.elevations, views.biomes, views.vegetation, views.populations, specRGB);
       mapRenderer.updateRivers(views.riverPaths, views.riverMeta);
+      if (views.lavaPaths) mapRenderer.updateLava(views.lavaPaths, views.lavaMeta);
       mapRenderer.render(
         { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotSteps: camRotation },
         getBiomeColors()
