@@ -251,29 +251,51 @@ def _generate_terrain(seed_str):
                 # Deep ocean: subtle seafloor variation
                 grid[r, c] += (detail[r, c] - 0.5) * 0.02
 
+    # ── Edge-to-interior gradient ──
+    # Push edges down (ocean), push interior up (land).
+    # Noise-modulated edge distance creates irregular coastlines.
+    edge_noise = rng.rand(gs, gs).astype(np.float32)
+    edge_noise = gaussian_filter(edge_noise, sigma=gs * 0.08, mode='wrap')
+    en_lo, en_hi = edge_noise.min(), edge_noise.max()
+    if en_hi > en_lo:
+        edge_noise = (edge_noise - en_lo) / (en_hi - en_lo)
+
+    border_depth = gs * 0.18  # how deep the ocean border extends
+    for r in range(gs):
+        for c in range(gs):
+            # Distance from nearest edge
+            edge_dist = min(r, c, gs - 1 - r, gs - 1 - c)
+            # Noise-modulated border width — creates bays and peninsulas
+            local_border = border_depth * (0.6 + edge_noise[r, c] * 0.8)
+            if edge_dist < local_border:
+                # Smooth cubic falloff toward edges
+                t = edge_dist / local_border
+                push = (1 - t) ** 2 * 0.25  # strong downward push at edge
+                grid[r, c] -= push
+            else:
+                # Interior gets a mild upward push
+                interior_t = (edge_dist - local_border) / max(1, gs * 0.5 - local_border)
+                grid[r, c] += interior_t * 0.02
+
     # ── Map to elevation array ──
     lo, hi = grid.min(), grid.max()
     if hi <= lo:
         hi = lo + 1
 
-    # Normalize to 0-1
+    # Normalize to 0-1. Sea level is where the raw grid crosses 0.
+    # Find where 0 sits in the normalized range
+    zero_norm = (0 - lo) / (hi - lo)
+
+    # Map so that raw 0 (sea level) → 0.20 in our output
     for r in range(gs):
         for c in range(gs):
-            elevations[r, c] = (grid[r, c] - lo) / (hi - lo)
-
-    # Find the threshold that gives ~20% water (80% land)
-    sorted_e = np.sort(elevations.ravel())
-    water_target = int(G2 * 0.20)  # 20% water → 80% land
-    sea_threshold = sorted_e[min(water_target, G2 - 1)]
-
-    # Remap: below threshold → [0, 0.20], above → [0.20, 1.0]
-    for r in range(gs):
-        for c in range(gs):
-            e = elevations[r, c]
-            if e <= sea_threshold:
-                elevations[r, c] = (e / max(0.001, sea_threshold)) * 0.20
+            raw_norm = (grid[r, c] - lo) / (hi - lo)
+            if raw_norm <= zero_norm:
+                # Underwater: [0, zero_norm] → [0, 0.20]
+                elevations[r, c] = (raw_norm / max(0.001, zero_norm)) * 0.20
             else:
-                elevations[r, c] = 0.20 + (e - sea_threshold) / max(0.001, 1 - sea_threshold) * 0.80
+                # Land: [zero_norm, 1] → [0.20, 1.0]
+                elevations[r, c] = 0.20 + (raw_norm - zero_norm) / max(0.001, 1 - zero_norm) * 0.80
 
     _assign_biomes()
 
