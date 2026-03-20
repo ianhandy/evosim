@@ -100,13 +100,15 @@ const VERT_SRC = `
     v_coastal = waterNeighbors / 4.0; // 0=inland, 1=surrounded by water
 
     // ── Elevation normalization ──
-    // Smooth ramp from sea level. Low land stays close to water,
-    // mid elevations get a gradual rise, peaks are compressed.
+    // Blend between linear (preserves variation) and smoothstep (gentle coast).
+    // Low land: mostly smoothstep (gentle). Mid-high: more linear (visible incline).
     float renderElev = elev;
     if (elev > WATER_LEVEL) {
-      float landT = (elev - WATER_LEVEL) / (1.0 - WATER_LEVEL); // 0-1 over land range
-      // Smoothstep: gentle start, steeper middle, compressed top
-      float normalized = landT * landT * (3.0 - 2.0 * landT);
+      float landT = (elev - WATER_LEVEL) / (1.0 - WATER_LEVEL);
+      float smooth = landT * landT * (3.0 - 2.0 * landT);
+      // Blend: 70% smoothstep at coast, transitions to 70% linear at high elevation
+      float blendT = landT; // 0 at coast, 1 at peak
+      float normalized = mix(smooth, landT, blendT * 0.6);
       renderElev = WATER_LEVEL + normalized * (1.0 - WATER_LEVEL) * 0.75;
     }
 
