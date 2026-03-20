@@ -261,6 +261,11 @@ const FRAG_SRC = `
     // Use elevation for water detection (more reliable than biome texture)
     bool isWaterFrag = v_elev < 0.20;
 
+    // ── Discard water tile seafloor (face 0) — ocean surface (face 3) covers it ──
+    if (isWaterFrag && v_faceType < 0.5) {
+      discard;
+    }
+
     // ── Water tile side faces: solid dark ocean walls ──
     if (isWaterFrag && v_faceType > 0.5 && v_faceType < 2.5) {
       float depth = clamp((0.20 - v_elev) / 0.18, 0.0, 1.0);
