@@ -48,6 +48,9 @@ const VERT_SRC = `
   varying vec2 v_quadPos;
   varying float v_forestDensity;
   varying vec4 v_flowData;        // river_entry, river_exit, lava_entry, lava_exit (0-8)
+  varying float v_depthT;         // isometric depth 0=near 1=far (atmospheric fog)
+  varying float v_beachNeighbors; // fraction of direct neighbors that are beach biome
+  varying float v_rockNeighbors;  // fraction of direct neighbors that are rocky biome
 
   void main() {
     float gs = u_gridSize;
@@ -188,11 +191,15 @@ const VERT_SRC = `
     pos.y += u_pan.y / u_resolution.y * 2.0;
 
     // Hillshade for top faces
-    // Light from NW: tiles higher than W and N neighbors are lit, lower are shadowed.
-    // Stronger multipliers (3.0/2.5 vs 2.5/2.0) give more depth contrast.
-    // Base 0.55 (was 0.5) keeps flat terrain slightly warmer rather than mid-gray.
+    // Light from NW with soft ambient occlusion.
+    // W gradient (east-west light) + N gradient (north-south light).
+    // AO term: concave basins get darker, convex ridges stay bright.
     if (a_faceType < 0.5) {
-      float hillFactor = clamp(0.5 + (elev - eW) * 3.0 + (elev - eN) * 2.5, 0.0, 1.0);
+      float dW = (elev - eW) * 3.5;
+      float dN = (elev - eN) * 2.8;
+      float avgNeighbor = (eN + eS + eW + eE) * 0.25;
+      float ao = clamp((elev - avgNeighbor) * 3.5, -0.25, 0.25);
+      float hillFactor = clamp(0.5 + dW + dN + ao, 0.0, 1.0);
       v_shade = 0.55 + 0.45 * hillFactor;
     } else if (a_faceType < 2.5) {
       v_shade = a_faceType < 1.5 ? 0.42 : 0.28;
@@ -205,14 +212,23 @@ const VERT_SRC = `
     v_faceType = a_faceType;
     v_quadPos = a_quad;
 
-    // Forest density: count how many of the 4 direct neighbors are forest (biome 2)
-    // BIOME_REED_BEDS = 2, encoded as 2/255 ≈ 0.0078 in texture
+    // Biome neighbor sampling — shared samples used for forest density + ecotone blending.
+    // BIOME_REED_BEDS=2, BEACH=3, ROCKY=4, encoded as biome/255 in texture.
     float forestSelf = abs(v_biome - 2.0) < 0.5 ? 1.0 : 0.0;
-    float fN = abs(texture2D(u_biomes, texCoord + vec2(0.0, -texel)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
-    float fS = abs(texture2D(u_biomes, texCoord + vec2(0.0,  texel)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
-    float fW = abs(texture2D(u_biomes, texCoord + vec2(-texel, 0.0)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
-    float fE = abs(texture2D(u_biomes, texCoord + vec2( texel, 0.0)).r * 255.0 - 2.0) < 0.5 ? 1.0 : 0.0;
+    float nbN = texture2D(u_biomes, texCoord + vec2(0.0, -texel)).r * 255.0;
+    float nbS = texture2D(u_biomes, texCoord + vec2(0.0,  texel)).r * 255.0;
+    float nbW = texture2D(u_biomes, texCoord + vec2(-texel, 0.0)).r * 255.0;
+    float nbE = texture2D(u_biomes, texCoord + vec2( texel, 0.0)).r * 255.0;
+    float fN = abs(nbN - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fS = abs(nbS - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fW = abs(nbW - 2.0) < 0.5 ? 1.0 : 0.0;
+    float fE = abs(nbE - 2.0) < 0.5 ? 1.0 : 0.0;
     v_forestDensity = (forestSelf + fN + fS + fW + fE) / 5.0;
+    // Biome ecotone: fraction of neighbors that are beach (3) or rocky (4)
+    v_beachNeighbors = (step(2.5, nbN) * step(nbN, 3.5) + step(2.5, nbS) * step(nbS, 3.5)
+                      + step(2.5, nbW) * step(nbW, 3.5) + step(2.5, nbE) * step(nbE, 3.5)) / 4.0;
+    v_rockNeighbors  = (step(3.5, nbN) * step(nbN, 4.5) + step(3.5, nbS) * step(nbS, 4.5)
+                      + step(3.5, nbW) * step(nbW, 4.5) + step(3.5, nbE) * step(nbE, 4.5)) / 4.0;
 
     // Flow directions: sample per-tile RGBA texture
     vec4 flowRaw = texture2D(u_flowDirs, texCoord);
@@ -222,6 +238,7 @@ const VERT_SRC = `
     // Back tiles (low rRow+rCol) get high z (far), front tiles get low z (near).
     // Elevation handled by y-position, not depth buffer.
     float depthT = (rRow + rCol) / (gs * 2.0);
+    v_depthT = depthT;
     float z = 0.9 - depthT * 0.85;
     // Water surface slightly in front of same-tile seafloor
     if (a_faceType > 2.5) z -= 0.005;
@@ -244,6 +261,9 @@ const FRAG_SRC = `
   varying vec2 v_quadPos;
   varying float v_forestDensity;
   varying vec4 v_flowData;
+  varying float v_depthT;
+  varying float v_beachNeighbors;
+  varying float v_rockNeighbors;
 
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
@@ -414,6 +434,25 @@ const FRAG_SRC = `
       color = bc / 255.0 + vec3(v_elev * 0.12, v_elev * 0.08, v_elev * 0.06);
     }
 
+    // ── Biome ecotone blending (top faces only) ──
+    // Soften hard boundaries by blending edge tiles toward neighbor biome tones.
+    // Creates natural edge-habitat transitions without extra texture samples.
+    if (v_faceType < 0.5) {
+      if (biome == 2) {
+        // Forest edge → sandy/rocky
+        if (v_beachNeighbors > 0.0) color = mix(color, vec3(0.52, 0.44, 0.30), v_beachNeighbors * 0.22);
+        if (v_rockNeighbors  > 0.0) color = mix(color, vec3(0.16, 0.15, 0.14), v_rockNeighbors  * 0.18);
+      } else if (biome == 3) {
+        // Beach edge → forest green fringe or rocky grey
+        if (v_forestDensity  > 0.0) color = mix(color, vec3(0.36, 0.40, 0.18), v_forestDensity  * 0.18);
+        if (v_rockNeighbors  > 0.0) color = mix(color, vec3(0.25, 0.23, 0.20), v_rockNeighbors  * 0.15);
+      } else if (biome == 4) {
+        // Rocky edge → mossy green at forest boundary, warm sand near beach
+        if (v_forestDensity  > 0.0) color = mix(color, vec3(0.18, 0.22, 0.12), v_forestDensity  * 0.15);
+        if (v_beachNeighbors > 0.0) color = mix(color, vec3(0.45, 0.38, 0.26), v_beachNeighbors * 0.15);
+      }
+    }
+
     // ── Within-tile texture + tree sprites (top faces only) ──
     if (v_faceType < 0.5) {
       if (biome == 2) {
@@ -517,7 +556,7 @@ const FRAG_SRC = `
         }
       }
 
-      // Lava (channels 2,3)
+      // Lava (channels 2,3) — hot core with dark crust and animated glow pulse
       float lEntry = v_flowData.b;
       float lExit = v_flowData.a;
       if (lEntry > 0.5 || lExit > 0.5) {
@@ -530,8 +569,15 @@ const FRAG_SRC = `
         }
         if (lDist < lineWidth) {
           float t = 1.0 - lDist / lineWidth;
-          vec3 lavaColor = vec3(0.75, 0.12, 0.02);
-          color = mix(color, lavaColor, t * 0.9);
+          // Flowing heat pulse: bright core oscillates as "lava moves"
+          float pulse = sin(u_time * 2.5 - v_quadPos.x * 8.0 - v_quadPos.y * 5.0) * 0.5 + 0.5;
+          vec3 lavaCrust = vec3(0.25, 0.03, 0.00); // dark solidified edges
+          vec3 lavaMid   = vec3(0.80, 0.15, 0.02); // orange-red mid flow
+          vec3 lavaCore  = vec3(1.00, 0.60, 0.10); // bright yellow-orange core
+          // Edges stay dark crust; center surges bright with pulse
+          vec3 lavaColor = mix(lavaCrust, lavaMid, t);
+          lavaColor      = mix(lavaColor, lavaCore, t * t * (0.65 + pulse * 0.35));
+          color = mix(color, lavaColor, t * 0.92);
         }
       }
     }
@@ -567,6 +613,11 @@ const FRAG_SRC = `
     if (u_popMode > 0.5 && v_faceType < 0.5 && v_popColor.a > 0.01) {
       color = mix(color, v_popColor.rgb, v_popColor.a * 0.6);
     }
+
+    // Atmospheric perspective: far tiles fade into a very subtle dark haze.
+    // Quadratic falloff keeps the effect invisible up close and only visible at horizon.
+    vec3 fogColor = vec3(0.04, 0.05, 0.08);
+    color = mix(color, fogColor, v_depthT * v_depthT * 0.14);
 
     gl_FragColor = vec4(color, 1.0);
   }
