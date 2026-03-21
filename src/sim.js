@@ -21,6 +21,9 @@ let tickInterval = null;
 // Event queue for cold data (extinctions, speciation, epoch changes)
 let eventQueue = [];
 
+const AUTO_SAVE_INTERVAL = 500; // generations between auto-saves
+let lastAutoSaveGen = 0;
+
 export function getLayout() { return layout; }
 export function getBuffer() { return sharedBuffer; }
 export function getViews() { return views; }
@@ -211,6 +214,13 @@ function step() {
   } else if (elapsed < 20 && views.globals[GLOBAL.LOD_LEVEL] === 1) {
     views.globals[GLOBAL.LOD_LEVEL] = 0;
     pyodide.runPython('set_lod(0)');
+  }
+
+  // Auto-save every AUTO_SAVE_INTERVAL generations
+  const gen = views.globals[GLOBAL.GENERATION];
+  if (gen - lastAutoSaveGen >= AUTO_SAVE_INTERVAL) {
+    saveGame();
+    lastAutoSaveGen = gen;
   }
 }
 

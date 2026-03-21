@@ -1599,7 +1599,7 @@ def debug_get_tile_info(r, c):
 def get_save_state():
     """Serialize full simulation state to JSON for localStorage save."""
     state = {
-        'version': 1,
+        'version': 2,
         'generation': generation,
         'grid_size': GRID_SIZE,
         'seed': str(_seed),
