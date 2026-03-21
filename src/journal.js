@@ -127,8 +127,10 @@ function _boom(s, curr, prev, gen) {
   const pct = Math.round((curr - prev) / prev * 100);
   const texts = [
     `Gen ${gen}. ${SPECIES_FULL[s]} numbers have surged — up ${pct}% to ${curr}. The marsh can barely contain them.`,
-    `Gen ${gen}. A population explosion among the ${SPECIES_NAMES[s]}. ${curr} individuals now, up from ${prev}. Resources will be tested.`,
-    `Gen ${gen}. The ${SPECIES_NAMES[s]} are thriving. ${pct}% growth in recent generations. I wonder how long this can sustain.`,
+    `Gen ${gen}. A population explosion among the ${SPECIES_NAMES[s]}. ${curr} individuals counted, up from ${prev}. Resources will be tested.`,
+    `Gen ${gen}. The ${SPECIES_NAMES[s]} are thriving. ${pct}% growth in recent generations. I wonder how long this can sustain before the system corrects.`,
+    `Gen ${gen}. Something is favoring the ${SPECIES_NAMES[s]} — ${curr} individuals now. That's ${pct}% more than last count. Conditions must be near optimal.`,
+    `Gen ${gen}. Boom. ${SPECIES_FULL[s]} at ${curr} and climbing. I've seen this pattern before. It doesn't always end well for the species that caused it.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
@@ -137,8 +139,10 @@ function _crash(s, curr, prev, gen) {
   const pct = Math.round((prev - curr) / prev * 100);
   const texts = [
     `Gen ${gen}. ${SPECIES_FULL[s]} in sharp decline — down ${pct}% to ${curr}. Something has shifted in the balance.`,
-    `Gen ${gen}. The ${SPECIES_NAMES[s]} are struggling. Population dropped from ${prev} to ${curr}. Predation? Habitat loss? Need to investigate.`,
-    `Gen ${gen}. Alarming decline in ${SPECIES_NAMES[s]} numbers. ${pct}% loss. The ecosystem is adjusting, but at what cost.`,
+    `Gen ${gen}. The ${SPECIES_NAMES[s]} are struggling. Population dropped from ${prev} to ${curr}. Predation? Habitat loss? Something to investigate.`,
+    `Gen ${gen}. Alarming decline in ${SPECIES_NAMES[s]} numbers. ${pct}% loss this period. The ecosystem is adjusting, but at what cost.`,
+    `Gen ${gen}. ${SPECIES_FULL[s]}: ${prev} to ${curr} in one interval. A ${pct}% drop. That's not noise — something's driving this.`,
+    `Gen ${gen}. The ${SPECIES_NAMES[s]} are being pushed out. ${pct}% fewer individuals. Competition, starvation, or something I haven't measured yet.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
@@ -147,7 +151,9 @@ function _endangered(s, curr, gen) {
   const texts = [
     `Gen ${gen}. Only ${curr} ${SPECIES_FULL[s]} remain. We may be witnessing the beginning of an extinction event.`,
     `Gen ${gen}. ${SPECIES_NAMES[s]} critically endangered — ${curr} individuals across the entire grid. Every generation could be their last.`,
-    `Gen ${gen}. I count ${curr} ${SPECIES_NAMES[s]}. The population is functionally on the edge. Genetic drift alone could finish them.`,
+    `Gen ${gen}. I count ${curr} ${SPECIES_NAMES[s]}. The population is functionally on the edge. Genetic drift alone could finish them now.`,
+    `Gen ${gen}. ${curr} ${SPECIES_NAMES[s]} left. At this size, a single bad generation ends the lineage entirely. Watching closely.`,
+    `Gen ${gen}. ${SPECIES_FULL[s]}: ${curr} individuals. The grid feels emptier already. Whether they pull through depends on factors I can't control.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
@@ -157,23 +163,37 @@ function _extinction(s, prev, gen) {
     `Gen ${gen}. ${SPECIES_FULL[s]} — extinct. The last individuals are gone. ${prev} at my last count, now zero. The marsh feels different already.`,
     `Gen ${gen}. I've confirmed it. No ${SPECIES_NAMES[s]} remain anywhere on the grid. An entire lineage, ended. The ecosystem will never be quite the same.`,
     `Gen ${gen}. Extinction confirmed: ${SPECIES_FULL[s]}. I keep scanning the tiles but there's nothing. The silence is the data now.`,
+    `Gen ${gen}. The ${SPECIES_NAMES[s]} are gone. ${prev} in the last count, zero today. I've been watching this system long enough to know some gaps never fill.`,
+    `Gen ${gen}. Final entry for ${SPECIES_FULL[s]}. Lineage terminated at generation ${gen}. Cause unknown. The niche they occupied will be contested now.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
 
 function _milestone(s, pop, gen) {
-  return `Gen ${gen}. ${SPECIES_FULL[s]} has crossed 1,000 individuals. A robust population — though permanence is never guaranteed in this system.`;
+  const texts = [
+    `Gen ${gen}. ${SPECIES_FULL[s]} has crossed 1,000 individuals. A robust population — though permanence is never guaranteed in this system.`,
+    `Gen ${gen}. ${SPECIES_NAMES[s]} at 1,000+. A threshold that matters. Extinction events become statistically unlikely at this scale. For now.`,
+    `Gen ${gen}. Over a thousand ${SPECIES_NAMES[s]} on the grid. The species has momentum. Whether that momentum outlasts its food base is the open question.`,
+  ];
+  return texts[Math.floor(Math.random() * texts.length)];
 }
 
 function _dominance(s, pop, total, gen) {
   const pct = Math.round(pop / total * 100);
-  return `Gen ${gen}. ${SPECIES_FULL[s]} dominates — ${pct}% of the total population. The ecosystem balance is tilting.`;
+  const texts = [
+    `Gen ${gen}. ${SPECIES_FULL[s]} dominates — ${pct}% of the total population. The ecosystem balance is tilting.`,
+    `Gen ${gen}. ${pct}% of all individuals are ${SPECIES_NAMES[s]}. That kind of dominance reshapes the system around itself. Other species adapt or decline.`,
+    `Gen ${gen}. The grid belongs to the ${SPECIES_NAMES[s]} right now. ${pct}% share. I've seen dominant species collapse faster than they rose. The resource base won't hold forever.`,
+  ];
+  return texts[Math.floor(Math.random() * texts.length)];
 }
 
 function _winter(gen) {
   const texts = [
     `Gen ${gen}. Deep winter. Food regrowth has slowed to a crawl. The species with high metabolism will feel this first.`,
     `Gen ${gen}. The seasonal low point. Vegetation is sparse, competition fierce. Winter always reveals who's adapted and who's borrowed time.`,
+    `Gen ${gen}. Cold season. Movement slows. Populations that overextended during summer are paying for it now. The grid looks thin.`,
+    `Gen ${gen}. Winter conditions. The marsh is quieter. I count fewer individuals moving than last cycle. Something is tightening.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
@@ -182,6 +202,8 @@ function _summer(gen) {
   const texts = [
     `Gen ${gen}. Peak summer. Vegetation flourishes. Populations swell. But abundance breeds competition.`,
     `Gen ${gen}. The warm season. Food is plentiful, growth rates peak. The predators are well-fed. For now.`,
+    `Gen ${gen}. High summer. The marsh is dense with life. It won't last — it never does — but for now, every biome is productive.`,
+    `Gen ${gen}. Summer peak. I've been tracking this system long enough to know what comes after. Enjoy the abundance, ${SPECIES_NAMES[Math.floor(Math.random() * 5)]}.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
@@ -190,10 +212,16 @@ function _volcanic(gen) {
   const texts = [
     `Gen ${gen}. Eruption. The ground splits open, ash billows skyward. Everything within range is transformed — or destroyed.`,
     `Gen ${gen}. Volcanic event. New rock rises from the earth. The ecosystem around the eruption site will never be the same.`,
+    `Gen ${gen}. Lava breach. The landscape is being rewritten. Anything that can't move is lost. The survivors inherit whatever remains.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
 }
 
 function _recovery(gen, pop) {
-  return `Gen ${gen}. Recovery. After a period of decline, the ecosystem bounces back — ${pop} total individuals across all species. Life finds a way.`;
+  const texts = [
+    `Gen ${gen}. Recovery. After a period of decline, the ecosystem bounces back — ${pop} total individuals across all species. Life finds a way.`,
+    `Gen ${gen}. The system stabilized. All five species present, ${pop} individuals total. A collapse that didn't fully collapse. Worth noting.`,
+    `Gen ${gen}. Unexpected resilience. The population bottleneck cleared. ${pop} individuals across all species. The diversity held.`,
+  ];
+  return texts[Math.floor(Math.random() * texts.length)];
 }

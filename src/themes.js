@@ -26,11 +26,11 @@ export const THEMES = {
       '--dim':        '#7a5a2a',
     },
     biomes: [
-      [40, 55, 70],    // deep_water — dark ocean floor (visible under deep water)
-      [60, 75, 65],    // shallow_marsh — muddy shallows / mangrove
-      [45, 100, 40],   // reed_beds — tropical green forest
-      [190, 175, 130], // tidal_flats — sandy beach
-      [90, 60, 45],    // rocky_shore — volcanic rock / mountain
+      [30, 50, 75],    // deep_water — blue ocean floor
+      [40, 90, 80],    // shallow_marsh — teal/turquoise shallows
+      [50, 120, 45],   // reed_beds — vivid tropical green
+      [200, 185, 140], // tidal_flats — warm sandy beach
+      [85, 65, 50],    // rocky_shore — rich volcanic rock
     ],
     water: 'rgba(20, 80, 140, 0.3)',
     mapBg: '#0a0800',
@@ -86,13 +86,13 @@ export const THEMES = {
       '--dim':        '#6a5830',
     },
     biomes: [
-      [20, 30, 40],   // deep_water — watering hole
-      [40, 55, 30],   // shallow — muddy bank
-      [60, 70, 30],   // reed — tall grass
-      [80, 70, 40],   // tidal — dry earth
-      [70, 55, 40],   // rocky — sandstone
+      [20, 35, 55],   // deep_water — mudhole / watering hole (blue)
+      [35, 58, 38],   // shallow — murky green shallows (distinct from water)
+      [75, 90, 35],   // reed — bright savanna grass (clearly green)
+      [170, 145, 90], // tidal — pale dry earth / cracked mud (tan)
+      [110, 80, 55],  // rocky — warm sandstone/laterite (orange-brown)
     ],
-    water: 'rgba(30, 50, 60, 0.2)',
+    water: 'rgba(30, 50, 70, 0.2)',
     mapBg: '#12100a',
   },
 
@@ -116,13 +116,13 @@ export const THEMES = {
       '--dim':        '#506070',
     },
     biomes: [
-      [15, 25, 45],   // deep_water — dark arctic sea
-      [30, 45, 55],   // shallow — ice edge
-      [50, 60, 65],   // reed — tundra
-      [65, 70, 75],   // tidal — permafrost
-      [80, 85, 90],   // rocky — snow/ice
+      [10, 20, 50],   // deep_water — deep navy arctic ocean
+      [30, 55, 75],   // shallow — bright ice-edge blue (clearly different from deep)
+      [55, 80, 65],   // reed — tundra moss (greenish teal, distinct)
+      [140, 155, 160],// tidal — pale grey permafrost flats
+      [210, 220, 230],// rocky — bright snow/ice cap (near-white)
     ],
-    water: 'rgba(20, 40, 60, 0.25)',
+    water: 'rgba(15, 35, 65, 0.25)',
     mapBg: '#0a1018',
   },
 
@@ -146,13 +146,13 @@ export const THEMES = {
       '--dim':        '#8a7a5a',
     },
     biomes: [
-      [100, 120, 150],  // deep_water — ink blue
-      [120, 145, 120],  // shallow — muted green
-      [140, 155, 110],  // reed — olive
-      [165, 150, 120],  // tidal — tan
-      [150, 140, 130],  // rocky — warm gray
+      [75, 100, 145],   // deep_water — strong ink blue (legible on paper bg)
+      [100, 140, 120],  // shallow — watercolour green-blue
+      [120, 145, 90],   // reed — olive-green (clearly distinct from shallow)
+      [180, 160, 120],  // tidal — warm parchment tan
+      [135, 125, 115],  // rocky — slate warm gray
     ],
-    water: 'rgba(80, 100, 140, 0.15)',
+    water: 'rgba(65, 90, 140, 0.18)',
     mapBg: '#e8dcc8',
   },
 };

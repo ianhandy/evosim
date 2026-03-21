@@ -188,10 +188,14 @@ const VERT_SRC = `
     pos.y += u_pan.y / u_resolution.y * 2.0;
 
     // Hillshade for top faces
+    // Light from NW: tiles higher than W and N neighbors are lit, lower are shadowed.
+    // Stronger multipliers (3.0/2.5 vs 2.5/2.0) give more depth contrast.
+    // Base 0.55 (was 0.5) keeps flat terrain slightly warmer rather than mid-gray.
     if (a_faceType < 0.5) {
-      v_shade = 0.5 + 0.5 * clamp(0.5 + (elev - eW) * 2.5 + (elev - eN) * 2.0, 0.0, 1.0);
+      float hillFactor = clamp(0.5 + (elev - eW) * 3.0 + (elev - eN) * 2.5, 0.0, 1.0);
+      v_shade = 0.55 + 0.45 * hillFactor;
     } else if (a_faceType < 2.5) {
-      v_shade = a_faceType < 1.5 ? 0.45 : 0.3;
+      v_shade = a_faceType < 1.5 ? 0.42 : 0.28;
     } else {
       v_shade = 1.0;
     }
@@ -310,6 +314,19 @@ const FRAG_SRC = `
       vec3 oceanColor = mix(shallowTint, deepTint, depth);
       vec3 finalColor = mix(seafloor, oceanColor, oceanMix);
 
+      // ── Gentle water shimmer animation ──
+      // Each tile gets a unique phase offset from v_dither so waves aren't
+      // perfectly synchronized. Two overlapping waves at different speeds.
+      float wave1 = sin(u_time * 1.4 + v_dither * 12.57) * 0.5 + 0.5;
+      float wave2 = sin(u_time * 0.85 + v_dither * 7.91 + 2.09) * 0.5 + 0.5;
+      float shimmer = wave1 * 0.6 + wave2 * 0.4;
+      // Shallow water: bright highlights on wave peaks
+      float shallowHL = (1.0 - depth) * shimmer * shimmer * 0.030;
+      // Deep water: subtle dark pulse in wave troughs
+      float deepPulse  = depth * (1.0 - shimmer) * 0.012;
+      finalColor += vec3(shallowHL * 0.7, shallowHL, shallowHL * 1.1)
+                  - vec3(deepPulse * 0.4, deepPulse * 0.7, deepPulse);
+
       gl_FragColor = vec4(finalColor, 1.0);
       return;
     }
@@ -369,11 +386,17 @@ const FRAG_SRC = `
       color += vec3(0.02, 0.03, 0.01) * v_elev;
 
     } else if (biome == 3) {
-      // ── Beach: light warm sand ──
-      vec3 wetSand = vec3(0.60, 0.52, 0.38);
-      vec3 drySand = vec3(0.78, 0.70, 0.52);
-      float sandT = clamp(smoothVar + (1.0 - v_coastal) * 0.3, 0.0, 1.0);
-      color = mix(wetSand, drySand, sandT);
+      // ── Beach: light warm sand, darker/wetter near water ──
+      // tideSand: water's edge — dark damp sand with slight cool tint
+      // wetSand: still damp, warm
+      // drySand: inland, pale and warm
+      vec3 tideSand = vec3(0.40, 0.36, 0.28);
+      vec3 wetSand  = vec3(0.60, 0.52, 0.38);
+      vec3 drySand  = vec3(0.78, 0.70, 0.52);
+      // v_coastal 1.0 = surrounded by water → tide line; 0 = inland → dry
+      float innerT = clamp(smoothVar + (1.0 - v_coastal) * 0.4, 0.0, 1.0);
+      vec3 sandBase = mix(wetSand, drySand, innerT);
+      color = mix(tideSand, sandBase, clamp(1.0 - v_coastal * 0.8, 0.0, 1.0));
 
     } else if (biome == 4) {
       // ── Rocky: gray/slate with subtle warm undertones ──
@@ -393,17 +416,11 @@ const FRAG_SRC = `
 
     // ── Within-tile texture + tree sprites (top faces only) ──
     if (v_faceType < 0.5) {
-      float n1 = fract(sin(v_quadPos.x * 43.1 + v_quadPos.y * 17.3 + v_dither * 91.7) * 43758.5);
-      float n2 = fract(sin(v_quadPos.x * 127.3 + v_quadPos.y * 311.1 + v_dither * 53.2) * 28461.9);
-      float n3 = fract(sin((v_quadPos.x + v_quadPos.y) * 73.7 + v_dither * 197.3) * 15731.3);
-
-      color += (n1 - 0.5) * 0.02;
-
       if (biome == 2) {
-        // Forest: tree sprites — small dark circles scattered across the tile
-        // Number of trees depends on forest density
-        vec3 treeColor = vec3(0.04, 0.12, 0.03);      // dark canopy
-        vec3 treeLightColor = vec3(0.08, 0.20, 0.06);  // lit canopy edge
+        // Forest: tree sprites with 3 visual types based on per-tree hash.
+        // Type 0 (dark pine):      small, very dark, minimal edge fade
+        // Type 1 (broadleaf):      medium, mid-green, smooth edge
+        // Type 2 (pale canopy):    larger, lighter green, softer fade
         float numTrees = 3.0 + v_forestDensity * 4.0;  // 3-7 trees
 
         for (float ti = 0.0; ti < 7.0; ti += 1.0) {
@@ -411,24 +428,45 @@ const FRAG_SRC = `
           // Deterministic tree position within tile from tile hash + index
           float tx = fract(sin(v_dither * 73.1 + ti * 127.3) * 43758.5);
           float ty = fract(sin(v_dither * 311.7 + ti * 91.1) * 28461.9);
-          // Keep trees away from tile edges
           tx = 0.15 + tx * 0.7;
           ty = 0.15 + ty * 0.7;
 
-          float dist = length(v_quadPos - vec2(tx, ty));
-          float treeSize = 0.08 + fract(sin(ti * 53.2 + v_dither * 17.3) * 15731.3) * 0.06;
+          // Per-tree type (0, 1, or 2)
+          float typeHash = fract(sin(ti * 83.1 + v_dither * 41.7) * 93847.3);
 
+          // Type affects size, center color, edge color
+          float treeSize;
+          vec3 centerColor;
+          vec3 edgeColor;
+          float blendStr;
+          if (typeHash < 0.35) {
+            // Dark pine — small, tight
+            treeSize    = 0.07 + fract(sin(ti * 53.2 + v_dither * 17.3) * 15731.3) * 0.03;
+            centerColor = vec3(0.03, 0.09, 0.02);
+            edgeColor   = vec3(0.06, 0.15, 0.04);
+            blendStr    = 0.80;
+          } else if (typeHash < 0.72) {
+            // Broadleaf — medium size
+            treeSize    = 0.09 + fract(sin(ti * 53.2 + v_dither * 17.3) * 15731.3) * 0.05;
+            centerColor = vec3(0.06, 0.16, 0.05);
+            edgeColor   = vec3(0.12, 0.26, 0.09);
+            blendStr    = 0.70;
+          } else {
+            // Pale canopy — larger, lighter
+            treeSize    = 0.11 + fract(sin(ti * 53.2 + v_dither * 17.3) * 15731.3) * 0.05;
+            centerColor = vec3(0.09, 0.22, 0.07);
+            edgeColor   = vec3(0.16, 0.34, 0.12);
+            blendStr    = 0.60;
+          }
+
+          float dist = length(v_quadPos - vec2(tx, ty));
           if (dist < treeSize) {
-            // Tree canopy: dark center, slightly lighter edge
             float t = dist / treeSize;
-            vec3 tc = mix(treeColor, treeLightColor, t);
-            color = mix(color, tc, 0.7);
+            vec3 tc = mix(centerColor, edgeColor, t);
+            color = mix(color, tc, blendStr);
           }
         }
       } else if (biome == 3) {
-        // Beach: fine sand grain + sparse trees if near forest
-        color += (n1 * 0.6 + n2 * 0.4 - 0.5) * 0.02;
-
         // 1-2 trees on beach tiles adjacent to forest
         if (v_forestDensity > 0.1) {
           for (float ti = 0.0; ti < 2.0; ti += 1.0) {
@@ -446,12 +484,6 @@ const FRAG_SRC = `
               }
             }
           }
-        }
-      } else if (biome == 4) {
-        // Rock: crack lines
-        float crack = abs(n1 - n2);
-        if (crack < 0.06) {
-          color *= 0.7;
         }
       }
     }
@@ -474,8 +506,14 @@ const FRAG_SRC = `
         }
         if (rDist < lineWidth) {
           float t = 1.0 - rDist / lineWidth;
-          vec3 riverColor = vec3(0.08, 0.22, 0.45);
-          color = mix(color, riverColor, t * 0.85);
+          // Center highlight: bright core fades to darker edges
+          vec3 riverEdge   = vec3(0.05, 0.16, 0.38);
+          vec3 riverCenter = vec3(0.12, 0.32, 0.58);
+          vec3 riverColor  = mix(riverEdge, riverCenter, t * t);
+          // Subtle time-based shimmer along the flow
+          float rShimmer = sin(u_time * 2.2 + v_quadPos.x * 14.0 + v_quadPos.y * 9.0) * 0.012;
+          riverColor += vec3(rShimmer * 0.4, rShimmer * 0.7, rShimmer);
+          color = mix(color, riverColor, t * 0.88);
         }
       }
 
@@ -559,6 +597,10 @@ export class MapRenderer {
     this.popMode = false;
     this.minElev = 0;
     this.startTime = performance.now();
+    // Dirty flags — only re-upload static textures when terrain changes
+    this._elevDirty = true;
+    this._biomeDirty = true;
+    this._flowDirty = true;
     this._init();
   }
 
@@ -686,40 +728,56 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
+  /**
+   * Mark terrain-static textures (elevation, biomes, flow dirs) as dirty.
+   * Call whenever the terrain changes (epoch transitions, volcano events, etc).
+   * Without this, these textures are only re-uploaded once at first call.
+   */
+  markTerrainDirty() {
+    this._elevDirty = true;
+    this._biomeDirty = true;
+    this._flowDirty = true;
+  }
+
   updateData(elevations, biomeData, vegetationData, flowDirsData, populations, speciesColors) {
     if (this.fallback) return;
     const gl = this.gl;
     const gs = this.gridSize;
 
-    // Track global min elevation for pillar base
-    let minE = 1;
-    const elevU8 = new Uint8Array(gs * gs);
-    for (let i = 0; i < gs * gs; i++) {
-      const e = elevations[i];
-      if (e < minE) minE = e;
-      elevU8[i] = Math.min(255, Math.max(0, Math.round(e * 255)));
+    // ── Static terrain textures (elevation, biome, flow) ──
+    // Only re-upload when dirty (terrain changes). Elevation/biome/flow are
+    // static between epoch transitions — no need to burn GPU bandwidth each tick.
+    if (this._elevDirty) {
+      let minE = 1;
+      const elevU8 = new Uint8Array(gs * gs);
+      for (let i = 0; i < gs * gs; i++) {
+        const e = elevations[i];
+        if (e < minE) minE = e;
+        elevU8[i] = Math.min(255, Math.max(0, Math.round(e * 255)));
+      }
+      this.minElev = minE;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, elevU8);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this._elevDirty = false;
     }
-    this.minElev = minE;
 
-    // Elevation texture
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, elevU8);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (this._biomeDirty) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.biomeTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, biomeData);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this._biomeDirty = false;
+    }
 
-    // Biome texture
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.biomeTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gs, gs, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, biomeData);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    // Vegetation texture
+    // Vegetation texture — changes every tick (food growth), always upload
     if (vegetationData) {
       const vegU8 = new Uint8Array(gs * gs);
       for (let i = 0; i < gs * gs; i++) {
@@ -735,10 +793,12 @@ export class MapRenderer {
     }
 
     // Flow direction texture (RGBA: river_entry, river_exit, lava_entry, lava_exit)
-    if (flowDirsData) {
+    // Only re-upload when dirty (river network is static between epoch transitions)
+    if (flowDirsData && this._flowDirty) {
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, this.flowDirTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gs, gs, 0, gl.RGBA, gl.UNSIGNED_BYTE, flowDirsData);
+      this._flowDirty = false;
     }
 
     // Population overlay texture

@@ -174,13 +174,20 @@ export function renderTraitHistograms(canvas, views, layout) {
       const bx = ox + b * barW;
       const by = oy + ch - barH;
 
-      // Glow
-      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.12)`;
+      // Glow halo
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.10)`;
       ctx.fillRect(bx - 1, by - 2, barW + 2, barH + 2);
 
-      // Bar
-      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.7)`;
+      // Bar body — gradient from full alpha at top to slightly dimmer at base
+      const grad = ctx.createLinearGradient(0, by, 0, by + barH);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},0.85)`);
+      grad.addColorStop(1, `rgba(${cr},${cg},${cb},0.45)`);
+      ctx.fillStyle = grad;
       ctx.fillRect(bx + 0.5, by, Math.max(1, barW - 1), barH);
+
+      // Bright top cap
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.95)`;
+      ctx.fillRect(bx + 0.5, by, Math.max(1, barW - 1), 1.5);
     }
 
     // Mean indicator (vertical line)
@@ -426,17 +433,22 @@ export function renderCorrelationPlot(canvas, views, layout) {
     const radius = 1.5 + (p.pop / maxPop) * 3;
     const color = SPECIES_COLORS[p.species];
 
-    // Glow
+    // Outer glow
     ctx.beginPath();
-    ctx.arc(px, py, radius + 2, 0, Math.PI * 2);
-    ctx.fillStyle = hexToRgba(color, 0.08);
+    ctx.arc(px, py, radius + 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = hexToRgba(color, 0.07);
     ctx.fill();
 
-    // Dot
+    // Dot fill
     ctx.beginPath();
     ctx.arc(px, py, radius, 0, Math.PI * 2);
-    ctx.fillStyle = hexToRgba(color, 0.55);
+    ctx.fillStyle = hexToRgba(color, 0.60);
     ctx.fill();
+
+    // Crisp outline for legibility
+    ctx.strokeStyle = hexToRgba(color, 0.85);
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
   }
 }
 
@@ -935,13 +947,18 @@ export function renderSpeciesDetail(canvas, detail, drawPortraitFn) {
     ctx.textAlign = 'right';
     ctx.fillText(val.toFixed(3), px + 130, ty);
 
-    // Trait bar
+    // Trait bar — slightly taller, with a top highlight
     const barX = px + 140;
     const barW = 100;
     ctx.fillStyle = st.border;
-    ctx.fillRect(barX, ty - 5, barW, 6);
-    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.7)`;
-    ctx.fillRect(barX, ty - 5, barW * val, 6);
+    ctx.fillRect(barX, ty - 6, barW, 7);
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.65)`;
+    ctx.fillRect(barX, ty - 6, barW * val, 7);
+    // Top cap highlight
+    if (val > 0) {
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.95)`;
+      ctx.fillRect(barX, ty - 6, barW * val, 1.5);
+    }
 
     // Sparkline (if available, universal traits only t < 5)
     if (t < 5 && detail.sparklines[t] && detail.sparklines[t].length > 2) {
@@ -1010,8 +1027,23 @@ export function renderSpeciesDetail(canvas, detail, drawPortraitFn) {
     let pMax = 1;
     for (const v of detail.popSparkline) if (v > pMax) pMax = v;
 
+    // Filled area under curve
+    const [pcr, pcg, pcb] = hexToRgb(detail.color);
+    ctx.beginPath();
+    for (let i = 0; i < detail.popSparkline.length; i++) {
+      const sx = mapX + (i / (detail.popSparkline.length - 1)) * popW;
+      const sy = popY + popH - (detail.popSparkline[i] / pMax) * popH;
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.lineTo(mapX + popW, popY + popH);
+    ctx.lineTo(mapX, popY + popH);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${pcr},${pcg},${pcb},0.12)`;
+    ctx.fill();
+
+    // Line on top
     ctx.strokeStyle = detail.color;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let i = 0; i < detail.popSparkline.length; i++) {
       const sx = mapX + (i / (detail.popSparkline.length - 1)) * popW;
