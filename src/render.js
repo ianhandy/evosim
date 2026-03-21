@@ -268,6 +268,7 @@ const FRAG_SRC = `
   uniform vec3 u_biomeColors[5];
   uniform float u_popMode;
   uniform float u_time;
+  uniform float u_season;   // 0-1: spring≈0, summer≈0.25, autumn≈0.5, winter≈0.75
 
   // Convert direction code (1-8) to quad UV coordinate on the tile diamond edge
   // 1=NW(0,0) 2=N(0.5,0) 3=NE(1,0) 4=E(1,0.5) 5=SE(1,1) 6=S(0.5,1) 7=SW(0,1) 8=W(0,0.5)
@@ -582,6 +583,26 @@ const FRAG_SRC = `
       }
     }
 
+    // ── Seasonal color tint (land top faces only) ──
+    // Blends a subtle seasonal palette over the base terrain color.
+    // Spring: fresh green · Summer: warm golden · Autumn: amber/rust · Winter: cool gray-blue
+    if (v_faceType < 0.5 && !isWaterFrag) {
+      float sPhase = fract(u_season) * 4.0; // 0-4, one unit per season
+      vec3 springTint = vec3(0.18, 0.38, 0.10);  // fresh spring green
+      vec3 summerTint = vec3(0.34, 0.32, 0.08);  // warm golden
+      vec3 autumnTint = vec3(0.40, 0.18, 0.05);  // amber/rust
+      vec3 winterTint = vec3(0.18, 0.20, 0.30);  // cool blue-gray
+
+      vec3 sTint;
+      float sf = fract(sPhase);
+      if (sPhase < 1.0)      sTint = mix(springTint, summerTint, sf);
+      else if (sPhase < 2.0) sTint = mix(summerTint, autumnTint, sf);
+      else if (sPhase < 3.0) sTint = mix(autumnTint, winterTint, sf);
+      else                   sTint = mix(winterTint, springTint, sf);
+
+      color = mix(color, sTint, 0.08); // 8% seasonal blend
+    }
+
     // Face shading
     float shade = v_shade;
 
@@ -715,6 +736,7 @@ export class MapRenderer {
       u_vegetation: gl.getUniformLocation(this.program, 'u_vegetation'),
       u_flowDirs: gl.getUniformLocation(this.program, 'u_flowDirs'),
       u_popMode: gl.getUniformLocation(this.program, 'u_popMode'),
+      u_season: gl.getUniformLocation(this.program, 'u_season'),
     };
 
     this.elevTexture = gl.createTexture();
@@ -892,7 +914,7 @@ export class MapRenderer {
     }
   }
 
-  render(camera, biomeColors) {
+  render(camera, biomeColors, season = 0) {
     if (this.fallback || !this.vertexCount) return;
     const gl = this.gl;
     const dpr = window.devicePixelRatio || 1;
@@ -921,6 +943,7 @@ export class MapRenderer {
     gl.uniform1f(this.locs.u_minElev, this.minElev);
     gl.uniform1f(this.locs.u_time, time);
     gl.uniform1f(this.locs.u_popMode, this.popMode ? 1.0 : 0.0);
+    gl.uniform1f(this.locs.u_season, season);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.elevTexture);

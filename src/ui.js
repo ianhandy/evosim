@@ -30,6 +30,7 @@ let gridSize = 128;
 let playing = false;
 let renderFrameId = null;
 let lastRenderedGen = -1;
+let currentSeason = 0; // cached season value, updated each tick, passed to renderer every frame
 let mapRenderer = null; // WebGL renderer (null = use Canvas 2D fallback)
 let debugMode = true;   // default on
 
@@ -676,6 +677,7 @@ function startRenderLoop() {
 
       // Season
       const seasonVal = views.globals[GLOBAL.SEASON_FACTOR];
+      currentSeason = seasonVal;
       seasonLabel.textContent = getSeasonName(seasonVal);
 
       // Collect population totals for chart
@@ -772,7 +774,8 @@ function startRenderLoop() {
       mapRenderer.updateData(views.elevations, views.biomes, views.vegetation, views.flowDirs, views.populations, specRGB);
       mapRenderer.render(
         { tilt: camTilt, zoom: camZoom, panX: camPanX, panY: camPanY, rotSteps: camRotation },
-        getBiomeColors()
+        getBiomeColors(),
+        currentSeason
       );
       // WebGL overlay rendering on separate canvas
       renderWebGLOverlay(views);
