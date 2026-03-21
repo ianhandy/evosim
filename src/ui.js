@@ -784,6 +784,7 @@ function startRenderLoop() {
       renderMap(views);
     }
 
+    renderMinimap(views);
     renderFrameId = requestAnimationFrame(frame);
   }
 
@@ -1100,6 +1101,110 @@ function renderWebGLOverlay(views) {
     speciationFlashT -= 0.025; // decay per frame (~60fps → ~1.5s fade)
     if (speciationFlashT < 0) speciationFlashT = 0;
   }
+}
+
+// ── Minimap ──
+// Top-down biome view at 1px-per-tile. Drawn every frame but ImageData
+// is only rebuilt when terrain changes (tracked by _minimapDirty flag).
+let _minimapDirty = true;
+let _minimapImageData = null; // cached terrain pixel array
+
+const BIOME_COLORS_MINI = [
+  [10,  25,  55],   // 0 Deep Water
+  [20,  55,  70],   // 1 Shallow Marsh
+  [30,  80,  20],   // 2 Forest
+  [160, 145, 100],  // 3 Beach
+  [65,  62,  58],   // 4 Rocky Shore
+];
+const WATER_LEVEL_MINI = 0.20;
+
+function renderMinimap(views) {
+  const mc = $('minimap-canvas');
+  if (!mc || !views) return;
+
+  const layout = sim.getLayout();
+  if (!layout) return;
+  const gs = layout.gridSize;
+
+  const dpr = window.devicePixelRatio || 1;
+  const displaySize = 100; // CSS px
+  mc.width  = displaySize * dpr;
+  mc.height = displaySize * dpr;
+
+  const ctx = mc.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Rebuild terrain image only when dirty (terrain changes, not every tick)
+  if (_minimapDirty || !_minimapImageData || _minimapImageData.width !== displaySize) {
+    const img = ctx.createImageData(displaySize, displaySize);
+    const scale = gs / displaySize;
+    for (let py = 0; py < displaySize; py++) {
+      for (let px = 0; px < displaySize; px++) {
+        const r = Math.min(gs - 1, Math.floor(py * scale));
+        const c = Math.min(gs - 1, Math.floor(px * scale));
+        const idx = r * gs + c;
+        const biome = views.biomes[idx];
+        const elev = views.elevations[idx];
+        const bc = BIOME_COLORS_MINI[biome] || [80, 60, 40];
+
+        // Slight elevation shading for land tiles
+        let bright = 1.0;
+        if (elev >= WATER_LEVEL_MINI) bright = 0.65 + (elev - WATER_LEVEL_MINI) * 0.7;
+
+        const pi = (py * displaySize + px) * 4;
+        img.data[pi]     = Math.min(255, bc[0] * bright);
+        img.data[pi + 1] = Math.min(255, bc[1] * bright);
+        img.data[pi + 2] = Math.min(255, bc[2] * bright);
+        img.data[pi + 3] = 255;
+      }
+    }
+    _minimapImageData = img;
+    _minimapDirty = false;
+  }
+
+  ctx.putImageData(_minimapImageData, 0, 0);
+
+  // Camera view indicator — project viewport rectangle onto minimap
+  // The visible area in tile-space depends on zoom/pan/canvas size
+  const mapEl = mapCanvas;
+  const mw = mapEl.clientWidth;
+  const mh = mapEl.clientHeight;
+  const tileW = (mw / gs) * 0.85 * camZoom;
+  const tileH = tileW * camTilt;
+  const offsetX = mw / 2 + camPanX;
+  const offsetY = (mh - gs * tileH * 0.5) / 2 + camPanY;
+
+  // Corners of screen → tile coords (ignoring elevation)
+  function screenToTile(sx, sy) {
+    const dxT = (sx - offsetX) * 2 / tileW;
+    const dyT = (sy - offsetY) * 2 / tileH;
+    return {
+      c: (dxT + dyT) / 2,
+      r: (dyT - dxT) / 2,
+    };
+  }
+
+  const corners = [
+    screenToTile(0, 0),
+    screenToTile(mw, 0),
+    screenToTile(mw, mh),
+    screenToTile(0, mh),
+  ];
+
+  // Minimap scale: displaySize px = gs tiles
+  const ms = displaySize / gs;
+
+  ctx.strokeStyle = 'rgba(221,193,101,0.7)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  corners.forEach((pt, i) => {
+    const px = pt.c * ms;
+    const py = pt.r * ms;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.closePath();
+  ctx.stroke();
 }
 
 // ── Pentagon / Radar diagram ──
@@ -1743,6 +1848,7 @@ function updateEpoch(epochId) {
   setTimeout(() => epochBanner.classList.remove('transitioning'), 1500);
   // Terrain/biome/flow data may change on epoch transition — mark dirty
   if (mapRenderer) mapRenderer.markTerrainDirty();
+  _minimapDirty = true;
   // Record epoch change as environmental timeline event
   if (id > 0) {
     timelineEvents.push({ gen: Math.floor(sim.getGeneration()), type: 'environmental', label: name, color: '#4a9eff' });
@@ -2158,6 +2264,8 @@ $('end-new').addEventListener('click', () => {
   mapRenderer = new MapRenderer(mapCanvas);
   if (mapRenderer.fallback) { mapRenderer = null; }
   else { mapRenderer.setup(gridSize); }
+  _minimapDirty = true;
+  _minimapImageData = null;
   challengeState = resetChallengeState();
   currentGen = 0;
   $('challenge-badge').classList.add('hidden');

@@ -483,6 +483,19 @@ html, body {
 }
 .map-hint.fade { opacity: 0; }
 
+/* ── Minimap ── */
+#minimap-canvas {
+  position: absolute;
+  bottom: 36px; right: 10px;
+  width: 100px; height: 100px;
+  border: 1px solid rgba(221,193,101,0.25);
+  border-radius: 3px;
+  background: #0a0500;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 150;
+}
+
 /* ── Tile Hover Tooltip ── */
 #tile-tooltip {
   position: absolute;
