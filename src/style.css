@@ -53,6 +53,7 @@ html, body {
   letter-spacing: 3px;
 }
 #loader-msg { color: var(--dim); font-size: 12px; }
+.loader-hint { color: var(--dim); font-size: 11px; opacity: 0.6; margin-top: -4px; }
 .loader-bar {
   width: 200px; height: 3px;
   background: var(--border);

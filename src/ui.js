@@ -2351,22 +2351,35 @@ const savedTheme = loadSavedTheme();
 themeSelect.value = savedTheme;
 
 // Preload Pyodide in background while showing setup screen
+const loaderHint = $('loader-hint');
+const loaderReload = $('loader-reload');
 loaderMsg.textContent = 'Loading simulation engine...';
 sim.preload((phase, pct) => {
   loaderFill.style.width = pct + '%';
   loaderMsg.textContent = {
     pyodide: 'Downloading Python runtime...',
-    numpy: 'Loading numpy...',
+    numpy: 'Loading scientific computing library...',
     scipy: 'Loading scipy...',
     code: 'Loading simulation code...',
     ready: 'Ready.',
   }[phase] || phase;
+  // Show a patience hint during the slow Pyodide download phase
+  if (loaderHint) {
+    loaderHint.textContent = phase === 'pyodide'
+      ? 'First load takes ~15 seconds — packages are cached after that.'
+      : '';
+  }
 }).then(() => {
+  if (loaderHint) loaderHint.textContent = '';
   loader.classList.add('hidden');
   setup.classList.remove('hidden');
   renderPreview(); // first preview with actual Python terrain gen
 }).catch(err => {
-  loaderMsg.textContent = 'Error: ' + err.message;
+  loaderMsg.textContent = 'Failed to load: ' + err.message;
+  loaderFill.style.width = '100%';
+  loaderFill.style.background = '#C0392B';
+  if (loaderHint) loaderHint.textContent = 'Check your internet connection and try reloading.';
+  if (loaderReload) loaderReload.classList.remove('hidden');
   console.error(err);
 });
 
