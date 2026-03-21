@@ -391,41 +391,121 @@ mapCanvas.addEventListener('wheel', e => {
   camZoom = Math.max(minZoom, Math.min(8.0, camZoom + delta));
 }, { passive: false });
 
-// Touch controls
+// ── Touch controls ──
+// Supports: single-finger pan, two-finger pinch-to-zoom with simultaneous pan,
+// double-tap to reset camera, velocity-based flick panning.
+
 let touchStartDist = 0;
 let touchStartZoom = 1;
+let touchPrevCenterX = 0;
+let touchPrevCenterY = 0;
+
+// Flick velocity tracking — rolling window of last few move deltas
+let flickVX = 0;
+let flickVY = 0;
+let flickRafId = null;
+
+function stopFlick() {
+  if (flickRafId) { cancelAnimationFrame(flickRafId); flickRafId = null; }
+  flickVX = 0;
+  flickVY = 0;
+}
+
+function startFlick(vx, vy) {
+  stopFlick();
+  if (Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5) return;
+  flickVX = vx;
+  flickVY = vy;
+  function tick() {
+    flickVX *= 0.92;
+    flickVY *= 0.92;
+    if (Math.abs(flickVX) < 0.3 && Math.abs(flickVY) < 0.3) { flickRafId = null; return; }
+    camPanX += flickVX;
+    camPanY += flickVY;
+    clampPan();
+    flickRafId = requestAnimationFrame(tick);
+  }
+  flickRafId = requestAnimationFrame(tick);
+}
+
+// Double-tap detection (touch equivalent of dblclick)
+let lastTapTime = 0;
+
 mapCanvas.addEventListener('touchstart', e => {
+  stopFlick();
+
   if (e.touches.length === 1) {
     isDragging = true;
     dragLastX = e.touches[0].clientX;
     dragLastY = e.touches[0].clientY;
+
+    // Double-tap: two taps within 300ms → reset camera
+    const now = Date.now();
+    if (now - lastTapTime < 300) {
+      camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
+    }
+    lastTapTime = now;
+
   } else if (e.touches.length === 2) {
     isDragging = false;
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     touchStartDist = Math.sqrt(dx * dx + dy * dy);
     touchStartZoom = camZoom;
+    // Track two-finger centroid for simultaneous pan
+    touchPrevCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    touchPrevCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+  } else if (e.touches.length === 3) {
+    // Three-finger tap: rotate 90° right
+    camRotation = (camRotation + 1) % 4;
   }
 }, { passive: true });
+
 mapCanvas.addEventListener('touchmove', e => {
+  e.preventDefault(); // prevent scroll/zoom conflicts while interacting with map
+
   if (e.touches.length === 1 && isDragging) {
     const dx = e.touches[0].clientX - dragLastX;
     const dy = e.touches[0].clientY - dragLastY;
+    // Rolling velocity (weighted toward most recent)
+    flickVX = flickVX * 0.4 + dx * 0.6;
+    flickVY = flickVY * 0.4 + dy * 0.6;
     dragLastX = e.touches[0].clientX;
     dragLastY = e.touches[0].clientY;
     camPanX += dx;
     camPanY += dy;
     clampPan();
+
   } else if (e.touches.length === 2) {
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     camZoom = Math.max(0.78, Math.min(8.0, touchStartZoom * (dist / touchStartDist)));
-  }
-}, { passive: true });
-mapCanvas.addEventListener('touchend', () => { isDragging = false; });
 
-// Double-click to reset camera
+    // Two-finger pan: track centroid movement
+    const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    camPanX += centerX - touchPrevCenterX;
+    camPanY += centerY - touchPrevCenterY;
+    clampPan();
+    touchPrevCenterX = centerX;
+    touchPrevCenterY = centerY;
+  }
+}, { passive: false });
+
+mapCanvas.addEventListener('touchend', () => {
+  isDragging = false;
+  // Launch flick if significant velocity — ignores tiny taps
+  if (Math.abs(flickVX) > 1.5 || Math.abs(flickVY) > 1.5) {
+    startFlick(flickVX, flickVY);
+  } else {
+    flickVX = 0;
+    flickVY = 0;
+  }
+});
+
+// Double-click to reset camera (desktop)
 mapCanvas.addEventListener('dblclick', () => {
   camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
 });
