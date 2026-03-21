@@ -28,16 +28,16 @@ TERRAIN_PARAMS = {
     'plate_speed':          (0.3, 0.8),
     'rift_curvature':       0.30,      # amplitude of rift curve (fraction of length)
     'eruption_count':       (120, 250),# total number of vents generated
-    'eruption_power':       (0.05, 0.30),
+    'eruption_power':       (0.05, 0.18),  # was (0.05, 0.30) — reduced upper bound, gentler peaks
     'eruption_radius':      (3, 12),   # vent radius in gs-space tiles
     'ridge_height':         0.15,      # max ridge elevation contribution
     'ridge_sigma':          2.0,       # ridge Gaussian sigma (in gs-space tiles)
     'radial_radius':        0.55,      # falloff starts at this fraction of igs canvas
     'radial_power':         1.5,       # controls coastline sharpness
-    'erosion_passes':       40,        # number of erosion passes (deterministic)
-    'erosion_strength':     0.40,      # max blend toward blurred (on flat tiles)
+    'erosion_passes':       80,        # increased for much smoother tile-to-tile transitions
+    'erosion_strength':     0.75,      # more aggressive — blend harder toward neighbors each pass
     'target_land_fraction': 0.45,      # fraction of tiles that become land
-    'land_gamma':           0.60,      # gamma < 1 lifts midtones (fixes flatness)
+    # Stage 8 uses a smoothstep curve — land_gamma no longer applies
     'noise_octaves':        3,
     'noise_scale':          0.08,      # base spatial scale of noise (fraction of gs)
     'noise_amplitude':      0.03,      # peak noise amplitude on land
@@ -230,7 +230,7 @@ def generate(seed, grid_size, params=None):
         lc = np.arange(c0, c1, dtype=np.float32)[None, :]
         dist   = np.sqrt((lr - cx) ** 2 + (lc - cy) ** 2)
         t_vent = np.clip(1.0 - dist / R, 0.0, 1.0)
-        edifice[r0:r1, c0:c1] += (pv * t_vent * t_vent).astype(np.float32)
+        edifice[r0:r1, c0:c1] += (pv * t_vent ** 1.5).astype(np.float32)  # ^1.5 = gentler cone than ^2
 
     # ── STAGE 3: RIDGE NETWORK LAYER ─────────────────────────────────────────
     # Gaussian cross-sections along rift lines. Independent of edifice.
@@ -265,7 +265,15 @@ def generate(seed, grid_size, params=None):
     if n_hi > n_lo:
         ocean_noise = (ocean_noise - n_lo) / (n_hi - n_lo)
     ocean_floor = np.full((igs, igs), -0.04, dtype=np.float32)
-    ocean_floor += (ocean_noise - 0.5) * 0.04  # ±0.02 undulation
+    ocean_floor += (ocean_noise - 0.5) * 0.16  # ±0.08 large-scale undulation
+
+    # Second octave: finer underwater detail
+    ocean_noise2 = rng.rand(igs, igs).astype(np.float32)
+    ocean_noise2 = gaussian_filter(ocean_noise2, sigma=igs * 0.03, mode='wrap')
+    n_lo2, n_hi2 = float(ocean_noise2.min()), float(ocean_noise2.max())
+    if n_hi2 > n_lo2:
+        ocean_noise2 = (ocean_noise2 - n_lo2) / (n_hi2 - n_lo2)
+    ocean_floor += (ocean_noise2 - 0.5) * 0.06  # ±0.03 fine detail
 
     # ── STAGE 5: COMPOSITE + RADIAL BOUNDARY ─────────────────────────────────
     # Sum all three layers, then apply smoothstep radial falloff.
@@ -305,13 +313,13 @@ def generate(seed, grid_size, params=None):
     erosion_strength = float(p['erosion_strength'])
 
     for _ in range(erosion_passes):
-        blurred = gaussian_filter(grid, sigma=0.8, mode='nearest')
+        blurred = gaussian_filter(grid, sigma=1.5, mode='nearest')  # wider kernel = smoother per pass
         pad     = np.pad(grid, 1, mode='edge')
         sx      = pad[1:-1, 2:] - pad[1:-1, :-2]
         sy      = pad[2:, 1:-1] - pad[:-2, 1:-1]
         slope   = np.sqrt(sx * sx + sy * sy)
-        # Flat → blend fully; steep → blend very little
-        blend   = erosion_strength * (1.0 - np.clip(slope / 0.05, 0.0, 1.0) * 0.8)
+        # Flat → blend fully; steep → blend much less. Higher threshold = erodes steeper tiles too.
+        blend   = erosion_strength * (1.0 - np.clip(slope / 0.12, 0.0, 1.0) * 0.8)
         blend   = blend.astype(np.float32)
         grid    = grid * (1.0 - blend) + blurred * blend
 
@@ -364,34 +372,61 @@ def generate(seed, grid_size, params=None):
     scale_c = gs / max(1, crop_w)
 
     # ── STAGE 7: SEA LEVEL CALIBRATION ───────────────────────────────────────
-    # Shift the elevation curve so exactly target_land_fraction of tiles land.
-    # Maps: [min, T] → [0, SEA_LEVEL],  [T, max] → [SEA_LEVEL, 1.0]
+    # Step 1: find T so exactly target_land_fraction of tiles are "land".
+    # Step 2: histogram-equalize the land distribution.
+    #
+    # Linear normalization ([T, max] → [SEA_LEVEL, 1.0]) failed because the
+    # volcanic edifice produces a heavily right-skewed distribution: 55-65% of
+    # land tiles cluster within 2% of SEA_LEVEL regardless of the gamma.
+    # A percentile-stretch (linear rescale by [p5, p95]) preserves the shape —
+    # it doesn't help either.
+    #
+    # Histogram equalization assigns each land tile a land_t equal to its
+    # RANK within the land population, normalized to [0, 1]. This guarantees:
+    #   p10_land = 0.10, p25 = 0.25, p50 = 0.50, p75 = 0.75, p90 = 0.90
+    # regardless of the raw elevation skew. Spatial monotonicity is preserved
+    # (higher raw elevation always → higher land_t) because rank = argsort.
 
     target_land = float(p['target_land_fraction'])
     T = float(np.percentile(grid_gs.ravel(), (1.0 - target_land) * 100.0))
 
-    lo = float(grid_gs.min())
-    hi = float(grid_gs.max())
-    if hi <= lo:
-        hi = lo + 1.0
-    T = float(np.clip(T, lo + 1e-6, hi - 1e-6))
+    lo      = float(grid_gs.min())
+    under   = grid_gs <= T
+    land_gs = ~under
 
-    under    = grid_gs <= T
-    land_gs  = ~under
-
+    # Water: linear [lo, T] → [0, SEA_LEVEL]
     elevs = np.empty((gs, gs), dtype=np.float32)
-    elevs[under]   = ((grid_gs[under]   - lo) / max(1e-6, T - lo)) * SEA_LEVEL
-    elevs[land_gs] = SEA_LEVEL + ((grid_gs[land_gs] - T) / max(1e-6, hi - T)) * (1.0 - SEA_LEVEL)
+    elevs[under] = ((grid_gs[under] - lo) / max(1e-6, T - lo)) * SEA_LEVEL
+
+    # Land: rank-based equalization → uniform land_t in [0, 1]
+    land_flat_idx = np.where(land_gs.ravel())[0]
+    if len(land_flat_idx) > 0:
+        land_raw_vals = grid_gs.ravel()[land_flat_idx]
+        sort_order    = np.argsort(land_raw_vals, kind='stable')
+        land_t_eq     = np.empty(len(land_flat_idx), dtype=np.float32)
+        land_t_eq[sort_order] = np.linspace(0.0, 1.0, len(land_flat_idx), dtype=np.float32)
+        elevs_flat    = elevs.ravel()
+        elevs_flat[land_flat_idx] = SEA_LEVEL + land_t_eq * (1.0 - SEA_LEVEL)
+        elevs = elevs_flat.reshape(gs, gs)
     np.clip(elevs, 0.0, 1.0, out=elevs)
 
-    # ── STAGE 8: LAND ELEVATION CURVE ────────────────────────────────────────
-    # Gamma < 1 expands midtones — tiles that would be flat lowland become
-    # visible mid-elevation terrain. Key fix for "too flat" island interiors.
+    # ── STAGE 8: LAND ELEVATION CURVE — HAWAIIAN SHIELD PROFILE ─────────────
+    # Hawaiian shield volcanoes have broad gentle slopes with a low, rounded summit.
+    # Key constraints:
+    #   • peak_elev kept low (0.42) so land tiles don't tower too tall above sea level
+    #   • Curve is a 70% linear + 30% smoothstep blend:
+    #       - f'(0) ≈ 0.70 → gently rising coast (not a wall, not dead flat)
+    #       - f'(1) ≈ 0.70 → nonzero slope at summit (avoids the flat-mesa plateau
+    #         that pure smoothstep creates via its zero derivative at t=1)
+    #   • Pure smoothstep was causing the "blocky mesa" look: the zero derivative
+    #     at t=1 crammed all high-rank tiles into a tiny elevation band at peak_elev,
+    #     creating a flat plateau with tall cliff walls at its edges.
 
-    gamma   = float(p['land_gamma'])
-    land_t  = (elevs - SEA_LEVEL) / (1.0 - SEA_LEVEL)
-    land_tc = np.power(np.clip(land_t, 0.0, 1.0).astype(np.float64), gamma).astype(np.float32)
-    elevs   = np.where(land_gs, SEA_LEVEL + land_tc * (1.0 - SEA_LEVEL), elevs)
+    peak_elev = 0.42   # reduced from 0.60 — lower peak means shorter pillar walls
+    land_t    = np.clip((elevs - SEA_LEVEL) / (1.0 - SEA_LEVEL), 0.0, 1.0).astype(np.float32)
+    smoothstep = land_t * land_t * (3.0 - 2.0 * land_t)
+    land_tc   = land_t * 0.7 + smoothstep * 0.3   # blend: avoids zero slope at summit
+    elevs     = np.where(land_gs, SEA_LEVEL + land_tc * (peak_elev - SEA_LEVEL), elevs)
     np.clip(elevs, 0.0, 1.0, out=elevs)
 
     # ── STAGE 9: FINE DETAIL NOISE ───────────────────────────────────────────
@@ -424,6 +459,17 @@ def generate(seed, grid_size, params=None):
     elevs   = np.where(land_gs,
                        np.clip(elevs + detail, SEA_LEVEL, 1.0),
                        elevs)
+
+    # ── FINAL SMOOTHING PASS ──────────────────────────────────────────────────
+    # After all generation stages, enforce gentle transitions between adjacent
+    # land tiles via a light Gaussian blur. Preserves water elevation exactly.
+    # This is the last line of defense against large tile-to-tile gradients
+    # that render as visible cliff steps in the isometric view.
+
+    elevs_blurred = gaussian_filter(elevs, sigma=1.5, mode='nearest')
+    elevs = np.where(land_gs,
+                     np.clip(elevs_blurred, SEA_LEVEL, 1.0),
+                     elevs)
 
     # ── STAGE 10: DRAINAGE BASIN ROUTING ─────────────────────────────────────
     # D8 flow direction: each tile routes to its steepest downhill neighbor.

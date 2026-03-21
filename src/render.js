@@ -119,10 +119,14 @@ const VERT_SRC = `
 
     // Pillar height:
     // Water tiles: from water surface down to global floor
-    // Land tiles: from terrain surface down to WATER LEVEL (not global floor)
-    //   — water tiles handle everything below the waterline
+    // Land tiles: from terrain surface down to LOWEST ADJACENT NEIGHBOR's surface.
+    //   At coastlines (any neighbor is water), the pillar still descends to water level.
+    //   For interior land tiles, pillar = just the height step to the lowest neighbor.
+    //   This prevents tall cliff walls between adjacent land tiles (mesa/pillar look).
+    float minNeighborElev = min(min(eN, eS), min(eW, eE));
+    float landFloorElev = !isWater ? max(WATER_LEVEL, minNeighborElev) : floorElev;
     float sideTopIz = isWater ? waterIz : surfaceIz;
-    float floorIz = isWater ? (floorElev * hScale) : waterIz;
+    float floorIz = isWater ? (floorElev * hScale) : (landFloorElev * hScale);
     float pillarH = max(0.0, sideTopIz - floorIz);
 
     // Water tiles always render side faces to prevent jagged gaps at coastlines
