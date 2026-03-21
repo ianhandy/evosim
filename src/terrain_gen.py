@@ -425,22 +425,20 @@ def generate(seed, grid_size, params=None):
         elevs = elevs_flat.reshape(gs, gs)
     np.clip(elevs, 0.0, 1.0, out=elevs)
 
-    # ── STAGE 8: LAND ELEVATION CURVE — HAWAIIAN SHIELD PROFILE ─────────────
-    # Hawaiian shield volcanoes have broad gentle slopes with a low, rounded summit.
-    # Key constraints:
-    #   • peak_elev kept low (0.42) so land tiles don't tower too tall above sea level
-    #   • Curve is a 70% linear + 30% smoothstep blend:
-    #       - f'(0) ≈ 0.70 → gently rising coast (not a wall, not dead flat)
-    #       - f'(1) ≈ 0.70 → nonzero slope at summit (avoids the flat-mesa plateau
-    #         that pure smoothstep creates via its zero derivative at t=1)
-    #   • Pure smoothstep was causing the "blocky mesa" look: the zero derivative
-    #     at t=1 crammed all high-rank tiles into a tiny elevation band at peak_elev,
-    #     creating a flat plateau with tall cliff walls at its edges.
+    # ── STAGE 8: LAND ELEVATION CURVE — CONE/V PROFILE ──────────────────────
+    # Goal: V-shaped cross-section — constant slope from coast to summit, like a
+    # volcanic cone or tent. No S-curve, no dome, no flattened top.
+    #
+    # land_t^0.8 is mildly convex-downward: slightly steeper high up, easing gently
+    # at the coast. Exponents <1 push elevation upward (more area at high elevation),
+    # exponents >1 pull it down (more area at low elevation). 0.8 is close to linear
+    # but gives the summit a sharp point rather than a flat mesa.
+    #
+    # Smoothstep was removed — its zero derivative at t=1 rounded the summit into a dome.
 
-    peak_elev = 0.42   # reduced from 0.60 — lower peak means shorter pillar walls
+    peak_elev = 0.42
     land_t    = np.clip((elevs - SEA_LEVEL) / (1.0 - SEA_LEVEL), 0.0, 1.0).astype(np.float32)
-    smoothstep = land_t * land_t * (3.0 - 2.0 * land_t)
-    land_tc   = land_t * 0.7 + smoothstep * 0.3   # blend: avoids zero slope at summit
+    land_tc   = np.power(land_t, 0.8).astype(np.float32)  # cone profile: near-linear, sharp summit
     elevs     = np.where(land_gs, SEA_LEVEL + land_tc * (peak_elev - SEA_LEVEL), elevs)
     np.clip(elevs, 0.0, 1.0, out=elevs)
 
