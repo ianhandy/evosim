@@ -64,21 +64,21 @@
 <div id="app" class="hidden">
   <header id="header">
     <h1>EVOSIM</h1>
-    <div class="controls" id="controls">
-      <button class="btn" id="btn-play">▶ Play</button>
-      <button class="btn speed-btn active" data-speed="1">1×</button>
-      <button class="btn speed-btn" data-speed="5">5×</button>
-      <button class="btn speed-btn" data-speed="20">20×</button>
-      <button class="btn speed-btn" data-speed="100">100×</button>
+    <div class="controls" id="controls" role="group" aria-label="Simulation controls">
+      <button class="btn" id="btn-play" aria-label="Play or pause simulation (Space)">▶ Play</button>
+      <button class="btn speed-btn active" data-speed="1" aria-label="Set speed to 1× (key 1)">1×</button>
+      <button class="btn speed-btn" data-speed="5" aria-label="Set speed to 5× (key 2)">5×</button>
+      <button class="btn speed-btn" data-speed="20" aria-label="Set speed to 20× (key 3)">20×</button>
+      <button class="btn speed-btn" data-speed="100" aria-label="Set speed to 100× (key 4)">100×</button>
     </div>
-    <span id="gen-counter">Gen <span id="gen-num">0</span></span>
-    <span id="season-label"></span>
-    <span id="challenge-badge" class="hidden"></span>
+    <span id="gen-counter" aria-live="polite" aria-label="Generation counter">Gen <span id="gen-num">0</span></span>
+    <span id="season-label" aria-live="polite"></span>
+    <span id="challenge-badge" class="hidden" aria-label="Active challenge"></span>
     <div class="header-right">
-      <button class="btn btn-small" id="btn-end" title="End observation">End</button>
-      <button class="btn btn-small" id="btn-save" title="Save observation">Save</button>
-      <button class="btn btn-small" id="btn-lod" title="Simulation detail level">Full</button>
-      <select id="theme-select" class="theme-select"></select>
+      <button class="btn btn-small" id="btn-end" title="End observation" aria-label="End observation">End</button>
+      <button class="btn btn-small" id="btn-save" title="Save observation" aria-label="Save observation (S)">Save</button>
+      <button class="btn btn-small" id="btn-lod" title="Simulation detail level" aria-label="Toggle simulation detail level">Full</button>
+      <select id="theme-select" class="theme-select" aria-label="Color theme"></select>
     </div>
   </header>
 
@@ -87,8 +87,8 @@
       <div id="epoch-banner" class="hidden">
         <div id="epoch-name"></div>
       </div>
-      <canvas id="map-canvas"></canvas>
-      <canvas id="overlay-canvas"></canvas>
+      <canvas id="map-canvas" role="img" aria-label="Evolution simulation map — drag to pan, scroll to zoom"></canvas>
+      <canvas id="overlay-canvas" aria-hidden="true"></canvas>
       <!-- Debug panel (floats over map) -->
       <div id="debug-panel" class="debug-panel hidden">
         <div class="debug-title">Debug</div>
@@ -100,27 +100,27 @@
         <button class="btn btn-small debug-btn" id="debug-eruption">Eruption</button>
         <div id="debug-tile-info" class="debug-tile-info"></div>
       </div>
-      <div id="overlay-controls" class="overlay-controls">
-        <button class="overlay-btn active" data-overlay="none">Off</button>
-        <button class="overlay-btn" data-overlay="diversity">Diversity</button>
-        <button class="overlay-btn" data-overlay="predation">Predation</button>
-        <button class="overlay-btn" data-overlay="vegetation-stress">Stress</button>
-        <button class="overlay-btn" data-overlay="migration">Migration</button>
+      <div id="overlay-controls" class="overlay-controls" role="group" aria-label="Map overlay">
+        <button class="overlay-btn active" data-overlay="none" aria-label="No overlay">Off</button>
+        <button class="overlay-btn" data-overlay="diversity" aria-label="Species diversity overlay">Diversity</button>
+        <button class="overlay-btn" data-overlay="predation" aria-label="Predation pressure overlay">Predation</button>
+        <button class="overlay-btn" data-overlay="vegetation-stress" aria-label="Vegetation stress overlay">Stress</button>
+        <button class="overlay-btn" data-overlay="migration" aria-label="Migration flux overlay">Migration</button>
       </div>
       <div class="map-hint" id="map-hint">Drag to pan · Scroll to zoom · Right-drag to tilt · Double-click to reset · Space=play/pause · 1-4=speed · R=reset · F=fullscreen · S=save</div>
     </section>
     <aside id="panel">
-      <div id="lab-tabs">
-        <button class="lab-tab active" data-tab="overview">Overview</button>
-        <button class="lab-tab" data-tab="traits">Traits</button>
-        <button class="lab-tab" data-tab="correlations">Correlations</button>
-        <button class="lab-tab" data-tab="regions">Regions</button>
-        <button class="lab-tab" data-tab="selection">Selection</button>
-        <button class="lab-tab" data-tab="life-history">Life History</button>
-        <button class="lab-tab" data-tab="stats">Stats</button>
+      <div id="lab-tabs" role="tablist" aria-label="Analysis panels">
+        <button class="lab-tab active" data-tab="overview" role="tab" aria-selected="true" aria-controls="tab-overview">Overview</button>
+        <button class="lab-tab" data-tab="traits" role="tab" aria-selected="false" aria-controls="tab-traits">Traits</button>
+        <button class="lab-tab" data-tab="correlations" role="tab" aria-selected="false" aria-controls="tab-correlations">Correlations</button>
+        <button class="lab-tab" data-tab="regions" role="tab" aria-selected="false" aria-controls="tab-regions">Regions</button>
+        <button class="lab-tab" data-tab="selection" role="tab" aria-selected="false" aria-controls="tab-selection">Selection</button>
+        <button class="lab-tab" data-tab="life-history" role="tab" aria-selected="false" aria-controls="tab-life-history">Life History</button>
+        <button class="lab-tab" data-tab="stats" role="tab" aria-selected="false" aria-controls="tab-stats">Stats</button>
       </div>
 
-      <div id="tab-overview" class="tab-content active">
+      <div id="tab-overview" class="tab-content active" role="tabpanel" aria-labelledby="tab-overview">
         <div class="panel-header">
           <span class="panel-title">Species</span>
           <button class="help-btn" data-help="species">?</button>
@@ -153,7 +153,7 @@
         </div>
       </div>
 
-      <div id="tab-traits" class="tab-content">
+      <div id="tab-traits" class="tab-content" role="tabpanel" aria-labelledby="tab-traits">
         <div class="panel-header">
           <span class="panel-title">Trait Distributions</span>
           <button class="help-btn" data-help="traits">?</button>
@@ -162,7 +162,7 @@
         <canvas id="trait-hist-canvas" class="analysis-canvas hist-canvas"></canvas>
       </div>
 
-      <div id="tab-correlations" class="tab-content">
+      <div id="tab-correlations" class="tab-content" role="tabpanel" aria-labelledby="tab-correlations">
         <div class="panel-header">
           <span class="panel-title">Correlation Explorer</span>
           <button class="help-btn" data-help="correlations">?</button>
@@ -176,7 +176,7 @@
         <canvas id="corr-canvas" class="analysis-canvas corr-canvas"></canvas>
       </div>
 
-      <div id="tab-regions" class="tab-content">
+      <div id="tab-regions" class="tab-content" role="tabpanel" aria-labelledby="tab-regions">
         <div class="panel-header">
           <span class="panel-title">Region Comparison</span>
           <button class="help-btn" data-help="regions">?</button>
@@ -189,7 +189,7 @@
         <canvas id="region-canvas" class="analysis-canvas region-canvas"></canvas>
       </div>
 
-      <div id="tab-selection" class="tab-content">
+      <div id="tab-selection" class="tab-content" role="tabpanel" aria-labelledby="tab-selection">
         <canvas id="selection-chart-0" class="trait-chart"></canvas>
         <canvas id="selection-chart-1" class="trait-chart"></canvas>
         <canvas id="selection-chart-2" class="trait-chart"></canvas>
@@ -197,11 +197,11 @@
         <canvas id="selection-chart-4" class="trait-chart"></canvas>
       </div>
 
-      <div id="tab-life-history" class="tab-content">
+      <div id="tab-life-history" class="tab-content" role="tabpanel" aria-labelledby="tab-life-history">
         <canvas id="life-history-chart"></canvas>
       </div>
 
-      <div id="tab-stats" class="tab-content">
+      <div id="tab-stats" class="tab-content" role="tabpanel" aria-labelledby="tab-stats">
         <div id="stats-readouts"></div>
       </div>
     </aside>

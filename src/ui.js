@@ -135,8 +135,12 @@ document.querySelectorAll('.challenge-btn').forEach(btn => {
 // ── Lab tab switching ──
 document.querySelectorAll('.lab-tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.lab-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.lab-tab').forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+    });
     btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
     document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
     const tabId = 'tab-' + btn.dataset.tab;
     document.getElementById(tabId).classList.add('active');
