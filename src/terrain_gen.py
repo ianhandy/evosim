@@ -170,16 +170,31 @@ def generate(seed, grid_size, params=None):
 
     vents = []
 
-    # Central summit vent
+    # Central summit vent — dominant primary peak, 4-7x stronger than secondary vents
     vents.append({
         'x': cx0, 'y': cy0,
-        'power':  rng.uniform(pow_lo * 0.8, pow_hi * 0.8),
-        'radius': rng.uniform(igs * 0.06, igs * 0.10),
+        'power':  rng.uniform(pow_hi * 4.0, pow_hi * 7.0),
+        'radius': rng.uniform(igs * 0.08, igs * 0.14),
         'age':    0,
     })
 
-    # Distribute remaining vents evenly across rifts
-    remaining        = eruption_count - 1
+    # Secondary dominant peak on one rift arm (2-3x secondary power) — creates the
+    # "two major Hawaiian-style peaks" feel without flattening the primary
+    secondary_rift = int(rng.randint(0, num_rifts))
+    sec_pts = rift_points[secondary_rift]
+    sec_t   = rng.uniform(0.15, 0.35)  # near the base of the rift
+    sec_idx = int(sec_t * (len(sec_pts) - 1))
+    sec_pr, sec_pc = sec_pts[sec_idx]
+    vents.append({
+        'x': float(max(1, min(igs - 2, sec_pr))),
+        'y': float(max(1, min(igs - 2, sec_pc))),
+        'power':  rng.uniform(pow_hi * 2.0, pow_hi * 3.0),
+        'radius': rng.uniform(igs * 0.06, igs * 0.10),
+        'age':    int(rng.uniform(10, 40)),
+    })
+
+    # Distribute remaining vents evenly across rifts (2 dominant vents already added)
+    remaining        = eruption_count - 2
     vents_per_rift   = max(1, remaining // num_rifts)
 
     for ri, pts in enumerate(rift_points):
@@ -470,6 +485,26 @@ def generate(seed, grid_size, params=None):
     elevs = np.where(land_gs,
                      np.clip(elevs_blurred, SEA_LEVEL, 1.0),
                      elevs)
+
+    # ── OCEAN EDGE TAPER ─────────────────────────────────────────────────────
+    # Water tiles near the map boundary are tapered to near-zero elevation so
+    # their isometric side pillars shrink to nothing at the canvas edge — no
+    # sharp blue wall. Land tiles are untouched.
+    #
+    # border_width controls how far inward the fade reaches (in tiles).
+    # At distance=0 (edge) elevation → 0. At distance≥border_width → unchanged.
+
+    border_width = gs * 0.10  # fade zone: outermost 10% of tiles
+    rows_gs = np.arange(gs, dtype=np.float32)[:, None]
+    cols_gs = np.arange(gs, dtype=np.float32)[None, :]
+    d_edge  = np.minimum(
+        np.minimum(rows_gs, gs - 1.0 - rows_gs),
+        np.minimum(cols_gs, gs - 1.0 - cols_gs),
+    ).astype(np.float32)
+    border_t      = np.clip(d_edge / border_width, 0.0, 1.0)
+    border_smooth = (border_t * border_t * (3.0 - 2.0 * border_t)).astype(np.float32)
+    elevs = np.where(land_gs, elevs, (elevs * border_smooth).astype(np.float32))
+    np.clip(elevs, 0.0, 1.0, out=elevs)
 
     # ── STAGE 10: DRAINAGE BASIN ROUTING ─────────────────────────────────────
     # D8 flow direction: each tile routes to its steepest downhill neighbor.
