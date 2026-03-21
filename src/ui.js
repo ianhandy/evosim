@@ -7,7 +7,7 @@ import * as sim from './sim.js';
 import { GLOBAL, TRAIT } from './layout.js';
 import { THEMES, setTheme, getBiomeColors, getMapBg, getWaterColor, loadSavedTheme } from './themes.js';
 import { drawPortrait } from './creatures.js';
-import { checkForEntries, getRecent } from './journal.js';
+import { checkForEntries, getRecent, addSpeciationEntry } from './journal.js';
 import { MapRenderer } from './render.js';
 import * as analysis from './analysis.js';
 
@@ -1086,6 +1086,20 @@ function renderWebGLOverlay(views) {
       ctx.fill();
     }
   }
+
+  // Speciation flash: radial gold pulse that fades out over ~1.5s
+  if (speciationFlashT > 0) {
+    const alpha = speciationFlashT * 0.35;
+    const radius = (1.1 - speciationFlashT) * Math.max(w, h) * 0.75;
+    const grad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, radius);
+    grad.addColorStop(0, `rgba(255, 233, 100, ${alpha * 0.8})`);
+    grad.addColorStop(0.4, `rgba(221, 193, 101, ${alpha * 0.5})`);
+    grad.addColorStop(1, `rgba(221, 193, 101, 0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    speciationFlashT -= 0.025; // decay per frame (~60fps → ~1.5s fade)
+    if (speciationFlashT < 0) speciationFlashT = 0;
+  }
 }
 
 // ── Pentagon / Radar diagram ──
@@ -1989,8 +2003,17 @@ function checkSimEvents() {
     if (evt.type === 'speciation') {
       if (challengeState.speciationGen === null) challengeState.speciationGen = currentGen;
       const specGen = evt.data?.gen || Math.floor(sim.getGeneration());
-      const specName = evt.data?.species !== undefined ? SPECIES_NAMES[evt.data.species] : 'Species';
+      const specIdx = evt.data?.species ?? -1;
+      const specName = specIdx >= 0 ? SPECIES_NAMES[specIdx] : 'Species';
+      const specFull = specIdx >= 0 ? SPECIES_FULL[specIdx] : 'Species';
       timelineEvents.push({ gen: specGen, type: 'speciation', label: `${specName} speciation`, color: '#DDC165' });
+
+      // Journal entry
+      if (specIdx >= 0) addSpeciationEntry(specGen, specIdx);
+
+      // Notification banner
+      showSpeciationBanner(specFull, specGen);
+
       if (!DISCLOSED.has('first-speciation')) {
         disclose('first-speciation',
           'Speciation Detected',
@@ -2233,6 +2256,32 @@ function processToastQueue() {
       processToastQueue();
     }, 400);
   }, 2500);
+}
+
+// ── Speciation banner ──
+// Distinct from achievement toasts — more dramatic, gold-accented, stays 4s.
+let speciationBannerTimeout = null;
+function showSpeciationBanner(speciesFullName, gen) {
+  let banner = $('speciation-banner');
+  if (!banner) return; // element not in DOM yet
+  $('speciation-banner-name').textContent = speciesFullName;
+  $('speciation-banner-gen').textContent = `Gen ${gen}`;
+  banner.classList.remove('hidden', 'fade-out');
+  banner.classList.add('show');
+
+  // Map flash: brief gold pulse on the overlay canvas
+  triggerSpeciationFlash();
+
+  if (speciationBannerTimeout) clearTimeout(speciationBannerTimeout);
+  speciationBannerTimeout = setTimeout(() => {
+    banner.classList.add('fade-out');
+    setTimeout(() => banner.classList.add('hidden'), 600);
+  }, 4000);
+}
+
+let speciationFlashT = 0; // 0 = no flash, >0 = flash progress (counts down)
+function triggerSpeciationFlash() {
+  speciationFlashT = 1.0; // will decay in overlay render loop
 }
 
 // ── Save/Load ──
