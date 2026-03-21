@@ -270,6 +270,9 @@ $('btn-begin').addEventListener('click', async () => {
     loader.classList.add('hidden');
     app.classList.remove('hidden');
 
+    // Start with genesis atmosphere
+    document.body.classList.add('atmo-genesis');
+
     // Initialize WebGL renderer
     mapRenderer = new MapRenderer(mapCanvas);
     if (mapRenderer.fallback) {
@@ -1802,6 +1805,8 @@ function renderStatsReadouts() {
   let aliveCount = 0;
   for (let s = 0; s < 5; s++) if (views.globals[GLOBAL.TOTAL_POP_0 + s] > 0) aliveCount++;
 
+  const levAcuity = views.globals[GLOBAL.LEVIATHAN_ACUITY] ?? 0.3;
+
   el.innerHTML = `
     <div class="stat-row">
       <div><div class="stat-label">Total Population</div></div>
@@ -1827,25 +1832,95 @@ function renderStatsReadouts() {
       <div><div class="stat-label">Generation</div></div>
       <div class="stat-value">${Math.floor(gen).toLocaleString()}</div>
     </div>
+    <div class="stat-row">
+      <div>
+        <div class="stat-label">Leviathan Acuity</div>
+        <div class="stat-sub">coevolves with Velothrix crest brightness</div>
+      </div>
+      <div class="stat-value">${levAcuity.toFixed(3)}</div>
+    </div>
   `;
 }
 
 // ── Epoch display ──
 const epochBanner = $('epoch-banner');
 const epochNameEl = $('epoch-name');
-const EPOCH_LIST = ['The Quiet', 'Age of Expansion', 'The Great Drought', "Predator's Reign",
-                    'The Divergence', 'Twilight', 'Last Stand', 'The Long Equilibrium'];
+
+// Must match EPOCH_NAMES insertion order in sim-core.py
+const EPOCH_LIST = [
+  'The Quiet', 'Age of Expansion', 'The Great Drought', "Predator's Reign",
+  'The Divergence', 'Twilight', 'Last Stand', 'The Long Equilibrium',
+  // New epochs (ported/added in combined-features):
+  'Velothrix Ascendancy', 'Leviathan Reign', 'Crawler Dominion',
+  'Crab Hegemony', 'Worm Bloom', 'Volcanic Age', 'The Recovery',
+];
+
+// Atmosphere key per epoch index — drives body.atmo-* CSS class (ported from evo)
+const EPOCH_ATMOSPHERE = [
+  'genesis',    // The Quiet
+  'expansion',  // Age of Expansion
+  'drought',    // The Great Drought
+  'dominance',  // Predator's Reign
+  'divergence', // The Divergence
+  'collapse',   // Twilight
+  'collapse',   // Last Stand
+  'equilibrium',// The Long Equilibrium
+  'dominance',  // Velothrix Ascendancy
+  'dominance',  // Leviathan Reign
+  'expansion',  // Crawler Dominion
+  'reef',       // Crab Hegemony
+  'marsh',      // Worm Bloom
+  'warming',    // Volcanic Age
+  'expansion',  // The Recovery
+];
+
+// One-line subtitle shown during epoch announce overlay
+const EPOCH_SUBTITLES = {
+  genesis:     'The ecosystem awakens',
+  expansion:   'Life spreads across the terrain',
+  drought:     'Resources grow scarce',
+  dominance:   'One species shapes the world',
+  divergence:  'A lineage splits in two',
+  collapse:    'Survivors cling to existence',
+  equilibrium: 'A long, stable harmony',
+  warming:     'The earth reshapes itself',
+  reef:        'Hard shells dominate the shore',
+  marsh:       'Bioluminescence floods the wetlands',
+};
+
 let lastEpochId = -1;
+const epochAnnounce = $('epoch-announce');
+const epochAnnounceName = $('epoch-announce-name');
+const epochAnnounceSub = $('epoch-announce-sub');
 
 function updateEpoch(epochId) {
   const id = Math.floor(epochId);
   if (id === lastEpochId) return;
+  const isFirst = lastEpochId === -1;
   lastEpochId = id;
   const name = EPOCH_LIST[id] || 'Unknown';
+  const atmo = EPOCH_ATMOSPHERE[id] || 'genesis';
+
+  // Update banner text
   epochNameEl.textContent = name;
   epochBanner.classList.remove('hidden');
   epochBanner.classList.add('transitioning');
   setTimeout(() => epochBanner.classList.remove('transitioning'), 1500);
+
+  // Switch atmosphere CSS class on body (ported from evo)
+  document.body.className = document.body.className.replace(/\batmo-\S+/g, '').trim();
+  document.body.classList.add('atmo-' + atmo);
+
+  // Show epoch announcement overlay (skip very first, silent epoch)
+  if (!isFirst) {
+    epochAnnounceName.textContent = name;
+    epochAnnounceSub.textContent = EPOCH_SUBTITLES[atmo] || '';
+    epochAnnounce.classList.remove('show');
+    void epochAnnounce.offsetWidth; // force reflow for re-animation
+    epochAnnounce.classList.add('show');
+    setTimeout(() => epochAnnounce.classList.remove('show'), 3000);
+  }
+
   // Terrain/biome/flow data may change on epoch transition — mark dirty
   if (mapRenderer) mapRenderer.markTerrainDirty();
   _minimapDirty = true;

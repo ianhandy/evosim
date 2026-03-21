@@ -37,6 +37,7 @@ export const GLOBAL = {
   PAUSED: 11,
   TOTAL_DEATHS: 12,
   VEGETATION_MEAN: 13,
+  LEVIATHAN_ACUITY: 14,  // coevolving antagonist — tracks Velothrix crest brightness
 };
 
 export function createLayout(gridSize) {

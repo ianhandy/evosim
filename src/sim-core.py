@@ -74,6 +74,34 @@ EPOCH_NAMES = {
     'twilight': 'Twilight',
     'last_stand': 'Last Stand',
     'equilibrium': 'The Long Equilibrium',
+    # Species dominance epochs — ported from evo
+    'velothrix_ascendancy': 'Velothrix Ascendancy',
+    'leviathan_reign': 'Leviathan Reign',
+    'crawler_dominion': 'Crawler Dominion',
+    'crab_hegemony': 'Crab Hegemony',
+    'worm_bloom': 'Worm Bloom',
+    # Geological/environmental epochs
+    'volcanic_age': 'Volcanic Age',
+    'recovery': 'The Recovery',
+}
+
+# Atmosphere key for each epoch — drives CSS body class in the browser
+EPOCH_ATMOSPHERE = {
+    'the_quiet':            'genesis',
+    'expansion':            'expansion',
+    'drought':              'drought',
+    'predator_reign':       'dominance',
+    'divergence':           'divergence',
+    'twilight':             'collapse',
+    'last_stand':           'collapse',
+    'equilibrium':          'equilibrium',
+    'velothrix_ascendancy': 'dominance',
+    'leviathan_reign':      'dominance',
+    'crawler_dominion':     'expansion',
+    'crab_hegemony':        'reef',
+    'worm_bloom':           'marsh',
+    'volcanic_age':         'warming',
+    'recovery':             'expansion',
 }
 
 # ── JS BUFFER VIEWS (for syncing) ────────────────────────────────────────────
@@ -108,6 +136,17 @@ COMPETITION = [
     (VELOTHRIX, CRAWLER, 0.0003),
     (CRAB,     CRAWLER, 0.0002),
 ]
+
+# ── COEVOLVING ANTAGONISTS ────────────────────────────────────────────────────
+# Leviathan visual acuity coevolves with Velothrix crest brightness (T_SPECIFIC).
+# As mean crest brightness rises across the Velothrix population, Leviathan
+# selection favours better visual detection — acuity tracks upward, amplifying
+# predation pressure on bright-crested individuals.
+# Arms race: bright crests help mate signaling but raise predation risk.
+# Ported from evo (evo/index.html ~L6274)
+
+leviathan_acuity = 0.3     # 0–1; starts moderate; rises toward mean Velothrix crest
+ACUITY_TRACKING_RATE = 0.02  # per-generation convergence rate
 
 
 # ── TERRAIN ───────────────────────────────────────────────────────────────────
@@ -312,7 +351,9 @@ def _step_all_tiles(season):
         if pred == LEVIATHAN:
             atk *= (0.5 + traits[:, :, LEVIATHAN, T_SPECIFIC])
         if prey == VELOTHRIX:
-            atk *= (0.7 + 0.6 * traits[:, :, VELOTHRIX, T_SPECIFIC])
+            # Arms race: acuity is the coefficient — starts low (0.3) and coevolves
+            # upward as mean crest brightness rises, amplifying selection pressure
+            atk *= (0.7 + leviathan_acuity * traits[:, :, VELOTHRIX, T_SPECIFIC])
         elif prey == WORM:
             atk *= (0.7 + 0.6 * traits[:, :, WORM, T_SPECIFIC])
         if prey == CRAWLER:
@@ -1010,6 +1051,27 @@ def _determine_cause(s):
     return 'unknown'
 
 
+# ── COEVOLVING ANTAGONIST UPDATE ─────────────────────────────────────────────
+
+def _update_leviathan_acuity():
+    """
+    Leviathan visual acuity coevolves with mean Velothrix crest brightness.
+    Higher mean crest → acuity rises → brighter crests face stronger predation.
+    Arms race feedback: pushes Velothrix toward crest dimorphism over time.
+    Ported from evo (evo/index.html ~L6947)
+    """
+    global leviathan_acuity
+    total_vel = int(np.sum(pops[:, :, VELOTHRIX]))
+    if total_vel > 0:
+        vel_pops = pops[:, :, VELOTHRIX].astype(np.float32)
+        vel_crests = traits[:, :, VELOTHRIX, T_SPECIFIC]
+        mean_crest = float(np.sum(vel_pops * vel_crests) / total_vel)
+    else:
+        mean_crest = 0.5
+    leviathan_acuity += ACUITY_TRACKING_RATE * (mean_crest - leviathan_acuity)
+    leviathan_acuity = max(0.05, min(0.95, leviathan_acuity))
+
+
 # ── EPOCH CLASSIFICATION ─────────────────────────────────────────────────────
 
 def _classify_epoch():
@@ -1023,34 +1085,71 @@ def _classify_epoch():
     total_pop = sum(int(np.sum(pops[:, :, s])) for s in range(NUM_SPECIES))
     any_speciation = any(speciation_detected)
 
-    # Priority order
+    # Priority order — most dramatic state wins (ported/enhanced from evo)
+
+    # 1. Extinction-level crisis
     if alive_count <= 1:
         new = 'last_stand'
     elif alive_count <= 3:
         new = 'twilight'
+
+    # 2. Active environmental crises
     elif _has_active_event('drought'):
         new = 'drought'
-    elif any(int(np.sum(pops[:, :, LEVIATHAN])) > total_pop * 0.4 for _ in [0] if total_pop > 0):
+    elif any(lf['active'] for lf in lava_flows):
+        new = 'volcanic_age'
+
+    # 3. Predator dominance — Leviathan > 40% of total population
+    elif total_pop > 0 and int(np.sum(pops[:, :, LEVIATHAN])) > total_pop * 0.4:
         new = 'predator_reign'
-    elif any_speciation:
-        new = 'divergence'
-    elif generation < 50:
-        new = 'the_quiet'
+
+    # 4. Species dominance — any species > 55% of total pop (ported from evo)
     elif total_pop > 0:
-        # Check if populations are stable (low variance over 100 gens)
-        # Simplified: if all 5 alive and gen > 500
-        if alive_count == 5 and generation > 500:
+        DOMINANCE_EPOCHS = [
+            'velothrix_ascendancy', 'leviathan_reign', 'crawler_dominion',
+            'crab_hegemony', 'worm_bloom',
+        ]
+        dominant = None
+        for s in range(NUM_SPECIES):
+            if int(np.sum(pops[:, :, s])) > total_pop * 0.55:
+                dominant = DOMINANCE_EPOCHS[s]
+                break
+        if dominant and dominant != 'leviathan_reign':
+            # Leviathan dominance already caught above; skip double-firing
+            new = dominant
+
+        # 5. Speciation
+        elif any_speciation:
+            new = 'divergence'
+
+        # 6. Early genesis
+        elif generation < 50:
+            new = 'the_quiet'
+
+        # 7. Recovery — all 5 alive after a twilight/last_stand period
+        elif alive_count == 5 and current_epoch in ('twilight', 'last_stand', 'recovery'):
+            new = 'recovery'
+
+        # 8. Stable equilibrium — all 5 alive for a long time
+        elif alive_count == 5 and generation > 500 and float(np.mean(vegetation)) > 0.35:
             new = 'equilibrium'
+
+        # 9. Default growth phase
         else:
             new = 'expansion'
     else:
         new = 'the_quiet'
 
     if new != current_epoch:
-        old_name = EPOCH_NAMES.get(current_epoch, current_epoch)
         new_name = EPOCH_NAMES.get(new, new)
-        events_buffer.append({'gen': generation, 'type': 'epoch',
-            'text': f'Gen {generation}. A new era begins: {new_name}.'})
+        atmo = EPOCH_ATMOSPHERE.get(new, 'genesis')
+        events_buffer.append({
+            'gen': generation,
+            'type': 'epoch',
+            'text': f'Gen {generation}. A new era begins: {new_name}.',
+            'atmosphere': atmo,
+            'epoch_key': new,
+        })
         current_epoch = new
         epoch_since = generation
 
@@ -1417,6 +1516,7 @@ def _sync_to_buffer():
         _js_globals[6 + s] = float(np.sum(pops[:, :, s]))
     _js_globals[12] = float(total_deaths_last)
     _js_globals[13] = float(np.mean(vegetation))
+    _js_globals[14] = float(leviathan_acuity)
 
     # Grid data — use .set() with a JS typed array created from numpy
     # to_js converts numpy arrays to JS typed arrays efficiently
@@ -1473,6 +1573,9 @@ def step_simulation(n=1):
             _step_rivers()
             _step_lava_flows()
             _update_tectonics()
+
+            # Coevolving antagonists — update every generation
+            _update_leviathan_acuity()
 
             # Detection systems
             _check_extinction()
@@ -1616,6 +1719,7 @@ def get_save_state():
         'speciation_detected': speciation_detected,
         'current_epoch': current_epoch,
         'epoch_since': epoch_since,
+        'leviathan_acuity': leviathan_acuity,
         'extinctions': extinctions,
         'rivers': [{'id': r['id'], 'path': r['path'], 'age': r['age'],
                      'width': r['width'], 'active': r['active']} for r in rivers],
@@ -1630,6 +1734,7 @@ def load_save_state(state_json):
     global generation, lod_level, species_alive, peak_pops
     global speciation_detected, speciation_gens, current_epoch, epoch_since
     global extinctions, rivers, _next_river_id, first_seen_gen
+    global leviathan_acuity
 
     state = json.loads(state_json)
 
@@ -1662,6 +1767,7 @@ def load_save_state(state_json):
     speciation_gens = [0] * NUM_SPECIES
     current_epoch = state.get('current_epoch', 'the_quiet')
     epoch_since = state.get('epoch_since', 0)
+    leviathan_acuity = state.get('leviathan_acuity', 0.3)
     extinctions = state.get('extinctions', [])
     first_seen_gen = [0] * NUM_SPECIES
 

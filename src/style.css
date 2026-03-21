@@ -1133,3 +1133,146 @@ html, body {
 .toggle-label input[type="checkbox"] {
   accent-color: var(--gold);
 }
+
+/* ── Epoch Atmosphere System (ported from evo) ── */
+/* --epoch-accent and --epoch-glow are overridden by body.atmo-* classes.
+   They propagate into epoch-banner color and subtle accent highlights. */
+
+:root {
+  --epoch-accent: var(--gold);
+  --epoch-glow: rgba(221, 193, 101, 0.15);
+}
+
+#atmosphere-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  transition: background 2.5s ease, box-shadow 2.5s ease;
+}
+
+/* Epoch banner picks up the accent color */
+#epoch-name {
+  transition: color 1s ease;
+  color: var(--epoch-accent);
+}
+
+/* Atmosphere body classes — each overrides --epoch-accent/--epoch-glow
+   and applies a subtle background tint via #atmosphere-layer */
+
+body.atmo-genesis { }
+
+body.atmo-expansion {
+  --epoch-accent: #7fcc7f;
+  --epoch-glow: rgba(127, 204, 127, 0.2);
+}
+body.atmo-expansion #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(20,50,20,0.06) 0%, transparent 60%);
+}
+
+body.atmo-equilibrium {
+  --epoch-accent: #8a9cc0;
+  --epoch-glow: rgba(138, 156, 192, 0.2);
+}
+
+body.atmo-drought {
+  --epoch-accent: #cc8844;
+  --epoch-glow: rgba(204, 136, 68, 0.3);
+}
+body.atmo-drought #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(80,50,10,0.09) 0%, transparent 60%);
+}
+
+body.atmo-dominance {
+  --epoch-accent: var(--gold-light);
+  --epoch-glow: rgba(255, 233, 163, 0.25);
+}
+body.atmo-dominance #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(60,40,10,0.07) 0%, transparent 60%);
+}
+
+body.atmo-divergence {
+  --epoch-accent: #bb77dd;
+  --epoch-glow: rgba(187, 119, 221, 0.25);
+}
+body.atmo-divergence #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(50,20,60,0.08) 0%, transparent 60%);
+}
+
+body.atmo-collapse {
+  --epoch-accent: #cc3333;
+  --epoch-glow: rgba(204, 51, 51, 0.35);
+}
+body.atmo-collapse #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(60,10,10,0.12) 0%, transparent 60%);
+  box-shadow: inset 0 0 120px rgba(100,20,20,0.12);
+}
+
+body.atmo-marsh {
+  --epoch-accent: #5daa8f;
+  --epoch-glow: rgba(93, 170, 143, 0.25);
+}
+body.atmo-marsh #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(20,60,50,0.07) 0%, transparent 60%);
+}
+
+body.atmo-reef {
+  --epoch-accent: var(--orange);
+  --epoch-glow: rgba(229, 89, 28, 0.25);
+}
+body.atmo-reef #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(60,30,10,0.06) 0%, transparent 60%);
+}
+
+body.atmo-warming {
+  --epoch-accent: #e07040;
+  --epoch-glow: rgba(224, 112, 64, 0.3);
+}
+body.atmo-warming #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(80,30,10,0.10) 0%, transparent 60%);
+}
+
+body.atmo-frost {
+  --epoch-accent: #88bbdd;
+  --epoch-glow: rgba(136, 187, 221, 0.3);
+}
+body.atmo-frost #atmosphere-layer {
+  background: linear-gradient(180deg, rgba(30,50,70,0.10) 0%, transparent 60%);
+}
+
+/* ── Epoch Announcement Overlay (ported from evo) ── */
+#epoch-announce {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  z-index: 100;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+#epoch-announce.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+#epoch-announce-name {
+  font-family: var(--sans);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--epoch-accent);
+  text-shadow: 0 0 40px var(--epoch-glow);
+  margin-bottom: 6px;
+}
+#epoch-announce-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+@media (max-width: 600px) {
+  #epoch-announce-name { font-size: 20px; letter-spacing: 2px; }
+}
