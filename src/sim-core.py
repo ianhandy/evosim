@@ -1446,39 +1446,48 @@ def init_simulation():
 def step_simulation(n=1):
     global generation, total_deaths_last
     for _ in range(n):
-        generation += 1
-        season = _season()
-        total_deaths_last = _step_all_tiles(season)
+        try:
+            generation += 1
+            season = _season()
+            total_deaths_last = _step_all_tiles(season)
 
-        # Environmental events
-        _check_events(season)
-        _apply_active_events(season)
+            # Environmental events
+            _check_events(season)
+            _apply_active_events(season)
 
-        # Migration frequency scales with LOD and grid size
-        if lod_level == 0:
-            _step_migration()
-        else:
-            # Simplified: migrate less often on larger grids
-            interval = max(2, G2 // 500)
-            if generation % interval == 0:
+            # Migration frequency scales with LOD and grid size
+            if lod_level == 0:
                 _step_migration()
+            else:
+                # Simplified: migrate less often on larger grids
+                interval = max(2, G2 // 500)
+                if generation % interval == 0:
+                    _step_migration()
 
-        # Terrain dynamics
-        if generation % 10 == 0:  # erosion every 10 gens (slow process)
-            _apply_erosion()
+            # Terrain dynamics
+            if generation % 10 == 0:  # erosion every 10 gens (slow process)
+                _apply_erosion()
 
-        # Geological processes
-        _spawn_river()
-        _step_rivers()
-        _step_lava_flows()
-        _update_tectonics()
+            # Geological processes
+            _spawn_river()
+            _step_rivers()
+            _step_lava_flows()
+            _update_tectonics()
 
-        # Detection systems
-        _check_extinction()
-        if generation % 10 == 0:  # check speciation every 10 gens (expensive)
-            _check_speciation()
-        if generation % 20 == 0:  # epoch classification
-            _classify_epoch()
+            # Detection systems
+            _check_extinction()
+            if generation % 10 == 0:  # check speciation every 10 gens (expensive)
+                _check_speciation()
+            if generation % 20 == 0:  # epoch classification
+                _classify_epoch()
+        except Exception as e:
+            # Log and continue — a single bad generation should not halt the sim.
+            # JS flushes events each tick so this will surface in the journal.
+            events_buffer.append({
+                'gen': generation,
+                'type': 'debug',
+                'text': f'Gen {generation}. Simulation step error (skipped): {e}',
+            })
 
     _sync_to_buffer()
     _sync_rivers_to_buffer()
@@ -1623,8 +1632,18 @@ def load_save_state(state_json):
     global extinctions, rivers, _next_river_id, first_seen_gen
 
     state = json.loads(state_json)
-    if state.get('version') != 1:
-        return
+
+    # Version check — reject saves from future versions we don't understand.
+    if state.get('version') not in (1, 2):
+        raise ValueError(f"Unsupported save version: {state.get('version')}")
+
+    # Grid size must match the running simulation.
+    saved_gs = state.get('grid_size')
+    if saved_gs != GRID_SIZE:
+        raise ValueError(
+            f"Save grid size {saved_gs}×{saved_gs} does not match "
+            f"current {GRID_SIZE}×{GRID_SIZE}. Start a new {saved_gs}×{saved_gs} sim to load this save."
+        )
 
     generation = state['generation']
     lod_level = state.get('lod_level', 0)

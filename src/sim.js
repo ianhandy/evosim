@@ -267,21 +267,31 @@ export function saveGame() {
  */
 export function loadGame() {
   if (!simReady) return false;
+  const stateJson = localStorage.getItem('evosim-save');
+  if (!stateJson) return false;
+
+  // Basic structural validation before handing to Python
+  let parsed;
   try {
-    const stateJson = localStorage.getItem('evosim-save');
-    if (!stateJson) return false;
-    // Pass JSON via globalThis to avoid string escaping issues
-    globalThis._loadStateJson = stateJson;
+    parsed = JSON.parse(stateJson);
+  } catch {
+    throw new Error('Save file is corrupted (invalid JSON).');
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Save file is corrupted (unexpected format).');
+  }
+
+  // Pass JSON via globalThis to avoid string escaping issues
+  globalThis._loadStateJson = stateJson;
+  try {
     pyodide.runPython(`
 from js import _loadStateJson
 load_save_state(str(_loadStateJson))
 `);
+  } finally {
     delete globalThis._loadStateJson;
-    return true;
-  } catch (e) {
-    console.error('Load failed:', e);
-    return false;
   }
+  return true;
 }
 
 /**

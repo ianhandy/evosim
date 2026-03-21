@@ -653,6 +653,22 @@ export class MapRenderer {
     this._biomeDirty = true;
     this._flowDirty = true;
     this._init();
+
+    // Handle WebGL context loss (GPU driver crash, tab backgrounded on mobile, etc.)
+    canvas.addEventListener('webglcontextlost', e => {
+      e.preventDefault(); // required to allow restoration
+      this.fallback = true;
+      console.warn('WebGL context lost — falling back to Canvas 2D until restored');
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.fallback = false;
+      this._elevDirty = true;
+      this._biomeDirty = true;
+      this._flowDirty = true;
+      this._init();
+      if (this.gridSize) this.setup(this.gridSize);
+      console.debug('WebGL context restored');
+    });
   }
 
   _init() {
