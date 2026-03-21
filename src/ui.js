@@ -2572,6 +2572,129 @@ HELP_CONTENT.regions = {
 <p>High genetic distance between isolated regions suggests speciation may be underway.</p>`,
 };
 
+// ── Ambient Sound ──
+// Web Audio API: ocean waves (low sine + filtered noise) + wind (bandpass noise).
+// All synthesis is procedural — no audio files. Very subtle by default.
+// AudioContext is only created on first user interaction to avoid autoplay policy.
+
+let audioCtx = null;
+let masterGain = null;
+let soundEnabled = false;
+let soundNodes = null; // { oceanGain, windGain, ... } — keep refs for teardown
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (e) {
+    console.warn('Web Audio not available:', e);
+    return;
+  }
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = soundEnabled ? 0.18 : 0;
+  masterGain.connect(audioCtx.destination);
+
+  // ── Ocean waves: filtered noise + slow LFO for wave rhythm ──
+  // White noise source
+  const bufferSize = audioCtx.sampleRate * 4; // 4s loop
+  const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const noiseData = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) noiseData[i] = Math.random() * 2 - 1;
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = noiseBuffer;
+  noiseSource.loop = true;
+
+  // Low-pass filter → deep rumble of ocean
+  const oceanLp = audioCtx.createBiquadFilter();
+  oceanLp.type = 'lowpass';
+  oceanLp.frequency.value = 180;
+  oceanLp.Q.value = 0.7;
+
+  // LFO for slow wave swell (0.08 Hz ≈ one wave every 12s)
+  const waveLFO = audioCtx.createOscillator();
+  waveLFO.frequency.value = 0.08;
+  const waveLFOGain = audioCtx.createGain();
+  waveLFOGain.gain.value = 0.55;
+  waveLFO.connect(waveLFOGain);
+
+  const oceanGain = audioCtx.createGain();
+  oceanGain.gain.value = 0.6;
+
+  // Second LFO offset for texture
+  const waveLFO2 = audioCtx.createOscillator();
+  waveLFO2.frequency.value = 0.13;
+  const waveLFO2Gain = audioCtx.createGain();
+  waveLFO2Gain.gain.value = 0.35;
+  waveLFO2.connect(waveLFO2Gain);
+
+  noiseSource.connect(oceanLp);
+  oceanLp.connect(oceanGain);
+  waveLFOGain.connect(oceanGain.gain);
+  waveLFO2Gain.connect(oceanGain.gain);
+  oceanGain.connect(masterGain);
+
+  // ── Wind: bandpass noise centered around 600Hz, very quiet ──
+  const windNoise = audioCtx.createBufferSource();
+  windNoise.buffer = noiseBuffer;
+  windNoise.loop = true;
+  windNoise.playbackRate.value = 0.5; // slightly different noise texture
+
+  const windBp = audioCtx.createBiquadFilter();
+  windBp.type = 'bandpass';
+  windBp.frequency.value = 600;
+  windBp.Q.value = 0.4;
+
+  // Slow wind gust LFO (0.05 Hz)
+  const windLFO = audioCtx.createOscillator();
+  windLFO.frequency.value = 0.05;
+  const windLFOGain = audioCtx.createGain();
+  windLFOGain.gain.value = 0.04;
+  windLFO.connect(windLFOGain);
+
+  const windGain = audioCtx.createGain();
+  windGain.gain.value = 0.12;
+
+  windNoise.connect(windBp);
+  windBp.connect(windGain);
+  windLFOGain.connect(windGain.gain);
+  windGain.connect(masterGain);
+
+  // Start everything
+  noiseSource.start();
+  windNoise.start();
+  waveLFO.start();
+  waveLFO2.start();
+  windLFO.start();
+
+  soundNodes = { noiseSource, windNoise, waveLFO, waveLFO2, windLFO };
+}
+
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  const btn = $('btn-sound');
+  if (btn) {
+    btn.textContent = soundEnabled ? '♪' : '♩';
+    btn.title = soundEnabled ? 'Mute ambient sound' : 'Unmute ambient sound';
+    btn.classList.toggle('active', soundEnabled);
+  }
+
+  if (!audioCtx) {
+    if (soundEnabled) initAudio(); // first activation
+    return;
+  }
+
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  const targetGain = soundEnabled ? 0.18 : 0;
+  if (masterGain) {
+    masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(targetGain, audioCtx.currentTime + 0.8);
+  }
+}
+
+$('btn-sound')?.addEventListener('click', toggleSound);
+
 // ── Init ──
 const savedTheme = loadSavedTheme();
 themeSelect.value = savedTheme;

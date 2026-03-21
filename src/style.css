@@ -535,6 +535,14 @@ html, body {
 .btn-small {
   font-size: 9px; padding: 3px 8px;
 }
+#btn-sound {
+  font-size: 11px; padding: 2px 7px; letter-spacing: 0;
+}
+#btn-sound.active {
+  background: rgba(221,193,101,0.12);
+  border-color: var(--gold);
+  color: var(--gold);
+}
 
 /* ── Journal Feed ── */
 #journal-feed {
