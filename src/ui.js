@@ -553,9 +553,27 @@ mapCanvas.addEventListener('click', e => {
   }
 });
 
-// Q/E to rotate 90°, P to toggle population overlay
+// Helper: activate a speed button by data-speed value and call sim.setSpeed
+function applySpeed(speed) {
+  document.querySelectorAll('.speed-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.speed) === speed);
+  });
+  sim.setSpeed(speed);
+}
+
+// Keyboard shortcuts:
+//   Esc           — dismiss modals
+//   Space         — play / pause
+//   1–4           — set speed (1×, 5×, 20×, 100×)
+//   Q / E         — rotate camera left / right
+//   R             — reset camera
+//   F             — fullscreen toggle
+//   S             — save
+//   P             — toggle population overlay
+//   Arrow keys    — pan map
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
   if (e.key === 'Escape') {
     // Dismiss modals and overlays
     if (!speciesDetailOverlay.classList.contains('hidden')) {
@@ -568,14 +586,58 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
+
+  // Sim-dependent shortcuts — only active once the simulation is running
+  if (sim.isReady()) {
+    if (e.key === ' ') {
+      e.preventDefault(); // prevent page scroll
+      playing = sim.togglePause();
+      btnPlay.textContent = playing ? '⏸ Pause' : '▶ Play';
+      btnPlay.classList.toggle('active', playing);
+      return;
+    }
+    if (e.key === '1') { applySpeed(1); return; }
+    if (e.key === '2') { applySpeed(5); return; }
+    if (e.key === '3') { applySpeed(20); return; }
+    if (e.key === '4') { applySpeed(100); return; }
+    if (e.key === 's' || e.key === 'S') {
+      if (sim.saveGame()) {
+        const orig = btnSave.textContent;
+        btnSave.textContent = 'Saved ✓';
+        setTimeout(() => { btnSave.textContent = orig; }, 1500);
+      }
+      return;
+    }
+  }
+
   if (e.key === 'q' || e.key === 'Q') {
     camRotation = (camRotation + 3) % 4; // rotate left 90°
   } else if (e.key === 'e' || e.key === 'E') {
     camRotation = (camRotation + 1) % 4; // rotate right 90°
+  } else if (e.key === 'r' || e.key === 'R') {
+    camTilt = 0.5; camZoom = 1.0; camPanX = 0; camPanY = 0; camRotation = 0;
+  } else if (e.key === 'f' || e.key === 'F') {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
   } else if (e.key === 'p' || e.key === 'P') {
     if (mapRenderer) {
       mapRenderer.popMode = !mapRenderer.popMode;
     }
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    camPanX += 50;
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    camPanX -= 50;
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    camPanY += 50;
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    camPanY -= 50;
   }
 });
 
