@@ -158,15 +158,59 @@ function _endangered(s, curr, gen) {
   return texts[Math.floor(Math.random() * texts.length)];
 }
 
+// Species-specific extinction templates — indexed by species index (0-4)
+const EXTINCTION_TEMPLATES = [
+  // Velothrix aurantis (0)
+  [
+    (prev, gen) => `Gen ${gen}. Velothrix aurantis — extinct. I've been watching this species since the first generation. ${prev} individuals at my last count, now zero. The amber marshes will miss them.`,
+    (prev, gen) => `Gen ${gen}. The last Velothrix is gone. ${prev} strong when I checked, now silence. They were the flagship of this ecosystem. Their loss changes everything downstream.`,
+    (prev, gen) => `Gen ${gen}. I won't write "Velothrix aurantis — extinct" without pausing on it. ${prev} counted last interval. None now. The species that defined this sim is finished.`,
+    (prev, gen) => `Gen ${gen}. Velothrix gone. They were here from the start — the original colonizer. ${prev} at last census. Whatever selective pressure ended them, it was decisive.`,
+    (prev, gen) => `Gen ${gen}. Final Velothrix aurantis record: generation ${gen}, population zero. ${prev} at last count. Lineage closed. The niche they pioneered opens now to whoever is adaptive enough to claim it.`,
+    (prev, gen) => `Gen ${gen}. The aurantis line ends here. ${prev} individuals — then none. There's something ironic about watching the namesake species go. The system doesn't care about names.`,
+  ],
+  // Kelp Leviathan (1)
+  [
+    (prev, gen) => `Gen ${gen}. The Kelp Leviathan is gone. Largest species in the system — ${prev} at my last count, now absent from every tile. The deep water zones will be emptier for it.`,
+    (prev, gen) => `Gen ${gen}. Leviathan extinction confirmed. ${prev} counted last interval. I never expected something so large to disappear so fast. Size doesn't confer immunity in this system.`,
+    (prev, gen) => `Gen ${gen}. The Kelp Leviathan is no more. ${prev} individuals — then zero. They once dominated the subtidal zones. Whatever ended them moved through the population faster than reproduction could compensate.`,
+    (prev, gen) => `Gen ${gen}. No more Leviathans. ${prev} in the last census, none today. Generation ${gen}. The biomass they represented will redistribute slowly. Something will fill the gap, but not them.`,
+    (prev, gen) => `Gen ${gen}. Kelp Leviathan — extinct at generation ${gen}. ${prev} individuals at last count. They were the heavyweights of this ecosystem. The food web just lost a major node.`,
+    (prev, gen) => `Gen ${gen}. The Leviathan went quietly. ${prev} at census, zero now. For a species of their size, I expected a slower decline. The end came in a single interval. That's a collapse, not a fade.`,
+  ],
+  // Reed Crawler (2)
+  [
+    (prev, gen) => `Gen ${gen}. Reed Crawler — extinct. ${prev} at my last count, none surviving. They were rarely the dominant species, but they filled every marginal niche. The reed beds feel empty.`,
+    (prev, gen) => `Gen ${gen}. The Crawlers are gone. ${prev} individuals last I checked, zero now. They were the quiet ones — always near the water's edge. I kept expecting them to bounce back. They didn't.`,
+    (prev, gen) => `Gen ${gen}. Reed Crawler extinction confirmed at generation ${gen}. ${prev} counted last interval. They specialized too narrowly. When the reeds thinned, the Crawlers had nowhere left to go.`,
+    (prev, gen) => `Gen ${gen}. No Crawlers remain. ${prev} at last census. They were adaptable in the middle generations but something broke their momentum. Zero left now. The reed margins are theirs no longer.`,
+    (prev, gen) => `Gen ${gen}. Final Reed Crawler entry: generation ${gen}, population zero. ${prev} at last count. Modest species — never topped the charts — but their absence opens up the littoral zone in ways I didn't expect.`,
+    (prev, gen) => `Gen ${gen}. The Crawlers slipped out quietly. ${prev} to zero in a single check interval. That's a rapid collapse for a species that seemed stable. Something changed fast, and they couldn't track it.`,
+  ],
+  // Tidal Crab (3)
+  [
+    (prev, gen) => `Gen ${gen}. Tidal Crab — extinct. ${prev} at last count, zero now. They were the scavengers, the recyclers. Without them the energy cycling in the tidal zones will shift. Generation ${gen} marks their end.`,
+    (prev, gen) => `Gen ${gen}. The Crabs are gone. ${prev} individuals — then none. They clung to the tidal margins through every pressure event. Whatever ended them finally, it was enough. The intertidal is quieter now.`,
+    (prev, gen) => `Gen ${gen}. Tidal Crab extinction at generation ${gen}. ${prev} counted last interval. They were tougher than they looked — survived three population bottlenecks before this one. This one didn't let go.`,
+    (prev, gen) => `Gen ${gen}. No more Crabs. ${prev} in the last census. I've watched them scrape through near-extinction twice. The third time the margin closed. Zero remaining. The tide rolls in on an emptier shore.`,
+    (prev, gen) => `Gen ${gen}. Final Tidal Crab record: gone at generation ${gen}. ${prev} at last count. They were specialists in survival. In the end, even that wasn't enough. The niche they held will be slow to fill.`,
+    (prev, gen) => `Gen ${gen}. Tidal Crab, extinct. ${prev} to zero — a fast ending for a species I expected to outlast the others. Their disappearance removes the only detritivore from the system. Something will pay for that.`,
+  ],
+  // Bioluminescent Worm (4)
+  [
+    (prev, gen) => `Gen ${gen}. The Bioluminescent Worm is gone. ${prev} at my last count, none remaining anywhere on the grid. Their light is extinguished. Generation ${gen}. I didn't know I'd miss it.`,
+    (prev, gen) => `Gen ${gen}. Worm extinction confirmed. ${prev} individuals — now zero. They were the most cryptic species in the system. Half the time I wasn't sure they were thriving or barely surviving. Now I know.`,
+    (prev, gen) => `Gen ${gen}. The Worms are gone. ${prev} at last census. They lit up the deep sediment zones in ways that were almost beautiful, for a simulation. Whatever pressure ended them left no signal I could read. Just absence.`,
+    (prev, gen) => `Gen ${gen}. Bioluminescent Worm — extinct at generation ${gen}. ${prev} last counted. Of all the species I've lost, this one leaves the strangest silence. The deep tiles have no glow now.`,
+    (prev, gen) => `Gen ${gen}. Final Worm entry. ${prev} individuals, then zero. They were the deepest specialists — only found in the softest sediments. When that habitat narrowed, there was nowhere for them to retreat to.`,
+    (prev, gen) => `Gen ${gen}. The last Worm is gone. ${prev} at last count. A species defined by inaccessibility — hard to find, hard to lose track of once you knew where to look. Now the data just shows zero.`,
+  ],
+];
+
 function _extinction(s, prev, gen) {
-  const texts = [
-    `Gen ${gen}. ${SPECIES_FULL[s]} — extinct. The last individuals are gone. ${prev} at my last count, now zero. The marsh feels different already.`,
-    `Gen ${gen}. I've confirmed it. No ${SPECIES_NAMES[s]} remain anywhere on the grid. An entire lineage, ended. The ecosystem will never be quite the same.`,
-    `Gen ${gen}. Extinction confirmed: ${SPECIES_FULL[s]}. I keep scanning the tiles but there's nothing. The silence is the data now.`,
-    `Gen ${gen}. The ${SPECIES_NAMES[s]} are gone. ${prev} in the last count, zero today. I've been watching this system long enough to know some gaps never fill.`,
-    `Gen ${gen}. Final entry for ${SPECIES_FULL[s]}. Lineage terminated at generation ${gen}. Cause unknown. The niche they occupied will be contested now.`,
-  ];
-  return texts[Math.floor(Math.random() * texts.length)];
+  const speciesTemplates = EXTINCTION_TEMPLATES[s];
+  const fn = speciesTemplates[Math.floor(Math.random() * speciesTemplates.length)];
+  return fn(prev, gen);
 }
 
 function _milestone(s, pop, gen) {
@@ -224,4 +268,21 @@ function _recovery(gen, pop) {
     `Gen ${gen}. Unexpected resilience. The population bottleneck cleared. ${pop} individuals across all species. The diversity held.`,
   ];
   return texts[Math.floor(Math.random() * texts.length)];
+}
+
+/**
+ * Speciation event journal entry — exported so ui.js can call it directly.
+ */
+export function addSpeciationEntry(gen, speciesIdx) {
+  const name = SPECIES_NAMES[speciesIdx];
+  const full = SPECIES_FULL[speciesIdx];
+  const texts = [
+    `Gen ${gen}. Speciation detected in ${full}. Northern and southern populations have diverged past the genetic threshold — their traits no longer overlap. A lineage splits. This is how new species are born.`,
+    `Gen ${gen}. The ${name} population has forked. Two genetically distinct groups, separated by distance and selection pressure. FST exceeds 0.25. I'm watching evolution in real time.`,
+    `Gen ${gen}. ${full} — speciation event confirmed. Allopatric isolation did its work. The traits that defined the common ancestor are now distributed differently across the map. They may never reconverge.`,
+    `Gen ${gen}. The ${name} have split. High genetic divergence between the northern and southern subpopulations — sustained for over 100 generations. A branching point. The phylogeny deepens.`,
+    `Gen ${gen}. Speciation in ${full}. I've been tracking the divergence for generations. The FST crossed the threshold and held. Two populations that can no longer be called the same species by any meaningful measure.`,
+    `Gen ${gen}. ${full} has speciated. What started as geographic isolation became genetic isolation. The variation I was watching between regions has crossed the line from polymorphism into species-level divergence.`,
+  ];
+  _add(gen, texts[Math.floor(Math.random() * texts.length)], 'speciation', { species: speciesIdx });
 }
