@@ -483,6 +483,37 @@ html, body {
 }
 .map-hint.fade { opacity: 0; }
 
+/* ── Tile Hover Tooltip ── */
+#tile-tooltip {
+  position: absolute;
+  z-index: 200;
+  background: rgba(12,6,0,0.90);
+  border: 1px solid rgba(221,193,101,0.3);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 10px; color: var(--text-dim);
+  pointer-events: none;
+  min-width: 120px;
+  line-height: 1.5;
+  backdrop-filter: blur(2px);
+}
+#tile-tooltip-biome {
+  font-size: 11px; color: var(--gold-light); font-weight: 500; margin-bottom: 3px;
+}
+#tile-tooltip-stats {
+  color: var(--text-dim);
+}
+#tile-tooltip-pops {
+  margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 4px;
+}
+.tile-pop-row {
+  display: flex; justify-content: space-between; gap: 8px;
+}
+.tile-pop-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+
 /* ── Header Right ── */
 .header-right {
   display: flex; align-items: center; gap: 6px;

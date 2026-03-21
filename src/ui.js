@@ -2556,3 +2556,96 @@ mapCanvas.addEventListener('click', e => {
       (pops ? `<br>${pops}` : '');
   }
 });
+
+// ── Tile hover tooltip ──
+// Uses O(1) analytical inverse isometric projection to find hovered tile.
+// Much faster than brute-force for large grids (128x128 = 16k tiles).
+const BIOME_NAMES = ['Deep Water', 'Shallow Marsh', 'Forest', 'Beach', 'Rocky Shore'];
+const tileTooltip = $('tile-tooltip');
+const ttBiome = $('tile-tooltip-biome');
+const ttStats = $('tile-tooltip-stats');
+const ttPops  = $('tile-tooltip-pops');
+
+let tooltipThrottle = 0;
+
+mapCanvas.addEventListener('mousemove', e => {
+  if (isDragging) { tileTooltip?.classList.add('hidden'); return; }
+  const now = Date.now();
+  if (now - tooltipThrottle < 40) return; // 25fps max
+  tooltipThrottle = now;
+
+  const views = sim.getViews();
+  const layout = sim.getLayout();
+  if (!views || !layout || !tileTooltip) return;
+
+  const gs = layout.gridSize;
+  const rect = mapCanvas.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  // Isometric tile dimensions (CSS pixels)
+  const tileW = (w / gs) * 0.85 * camZoom;
+  const tileH = tileW * camTilt;
+
+  // Map origin in CSS pixels (tile (0,0) maps to this point)
+  const offsetX = w / 2 + camPanX;
+  const offsetY = (h - gs * tileH * 0.5) / 2 + camPanY;
+
+  // Invert isometric projection (ignoring elevation — good enough for hover):
+  // screen_x = offsetX + (c - r) * tileW / 2  → dx_tile = (mx - offsetX) * 2 / tileW = c - r
+  // screen_y = offsetY + (c + r) * tileH / 2  → dy_tile = (my - offsetY) * 2 / tileH = c + r
+  const dxT = (mx - offsetX) * 2 / tileW;
+  const dyT = (my - offsetY) * 2 / tileH;
+  const col = Math.round((dxT + dyT) / 2);
+  const row = Math.round((dyT - dxT) / 2);
+
+  if (row < 0 || row >= gs || col < 0 || col >= gs) {
+    tileTooltip.classList.add('hidden');
+    return;
+  }
+
+  const idx = row * gs + col;
+  const elev = views.elevations[idx];
+  const biome = views.biomes[idx];
+  const veg = views.vegetation ? views.vegetation[idx] : 0;
+
+  // Biome label
+  ttBiome.textContent = BIOME_NAMES[biome] ?? `Biome ${biome}`;
+
+  // Stats line
+  const elevPct = Math.round(elev * 100);
+  const vegPct = Math.round(veg * 100);
+  ttStats.textContent = `Elev ${elevPct}%  ·  Veg ${vegPct}%  ·  (${row},${col})`;
+
+  // Species populations
+  let popsHtml = '';
+  if (views.populations) {
+    for (let s = 0; s < 5; s++) {
+      const pop = views.populations[idx * 5 + s];
+      if (pop > 0) {
+        popsHtml += `<div class="tile-pop-row">
+          <span><span class="tile-pop-dot" style="background:${SPECIES_COLORS[s]}"></span>${SPECIES_NAMES[s]}</span>
+          <span>${pop}</span>
+        </div>`;
+      }
+    }
+  }
+  ttPops.innerHTML = popsHtml || '<span style="opacity:0.4">No species here</span>';
+
+  // Position tooltip near cursor, keep inside map area
+  const pad = 12;
+  let tx = mx + pad;
+  let ty = my + pad;
+  // Adjust if near right/bottom edge (rough: assume 140px wide, 90px tall)
+  if (tx + 145 > w) tx = mx - 145 - pad;
+  if (ty + 95 > h) ty = my - 95 - pad;
+  tileTooltip.style.left = tx + 'px';
+  tileTooltip.style.top  = ty + 'px';
+  tileTooltip.classList.remove('hidden');
+});
+
+mapCanvas.addEventListener('mouseleave', () => {
+  tileTooltip?.classList.add('hidden');
+});
