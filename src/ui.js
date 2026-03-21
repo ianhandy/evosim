@@ -1579,6 +1579,8 @@ function updateEpoch(epochId) {
   epochBanner.classList.remove('hidden');
   epochBanner.classList.add('transitioning');
   setTimeout(() => epochBanner.classList.remove('transitioning'), 1500);
+  // Terrain/biome/flow data may change on epoch transition — mark dirty
+  if (mapRenderer) mapRenderer.markTerrainDirty();
   // Record epoch change as environmental timeline event
   if (id > 0) {
     timelineEvents.push({ gen: Math.floor(sim.getGeneration()), type: 'environmental', label: name, color: '#4a9eff' });
