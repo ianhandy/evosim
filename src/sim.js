@@ -128,10 +128,10 @@ export async function init(gridSize, seed, onProgress) {
   layout = createLayout(gridSize);
   try {
     sharedBuffer = new SharedArrayBuffer(layout.totalBytes);
-    console.log('Using SharedArrayBuffer');
+    console.debug('Using SharedArrayBuffer');
   } catch {
     sharedBuffer = new ArrayBuffer(layout.totalBytes);
-    console.log('SharedArrayBuffer unavailable, using ArrayBuffer');
+    console.debug('SharedArrayBuffer unavailable, using ArrayBuffer');
   }
   views = createViews(sharedBuffer, layout);
   new Uint8Array(sharedBuffer).fill(0);

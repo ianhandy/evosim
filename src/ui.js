@@ -575,7 +575,6 @@ document.addEventListener('keydown', e => {
   } else if (e.key === 'p' || e.key === 'P') {
     if (mapRenderer) {
       mapRenderer.popMode = !mapRenderer.popMode;
-      console.log('Population overlay:', mapRenderer.popMode ? 'ON' : 'OFF');
     }
   }
 });
